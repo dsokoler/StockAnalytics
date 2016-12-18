@@ -20,8 +20,12 @@
 # -Figure out how to use Bloomberg API with python (or build C program and integrate with python) (http://www.programmableweb.com/api/bloomberg)
 # -Find info on stock performance by market (tech, clothing, finance, etc) and built that into the analytics of stocks
 
+#Nasdaq pre-market trading hours: 4:00am to 9:30am (http://www.investopedia.com/terms/p/premarket.asp)
+#		market hours from 9:30am to 4:00pm
+#		after-market hours from 4:00pm to 8:00pm (http://www.investopedia.com/terms/a/afterhourstrading.asp)
+
 #INSTALL GOOGLEFINANCE BEFORE RUNNING
-import sys, getopt
+import sys, getopt, json
 
 importError = False;
 try:
@@ -36,13 +40,19 @@ except ImportError:
 	print("Please install yahoo-finance : 'pip install yahoo-finance'");
 	importError = True;
 
+try:
+    from urllib.request import Request, urlopen
+except ImportError:  # python 2
+	print("Please install urllib : 'pip install urllib'");
+	importError = True;
+
 if (importError):
 	sys.exit();
 
 
 
 optionsList = [""];
-longOptionsList = ["stocks="];
+longOptionsList = ["stocks=", "market="];
 
 googleFinanceKeyToFullName = {
 #Abbreviation  : Full Name
@@ -57,11 +67,10 @@ googleFinanceKeyToFullName = {
 	u'lt'      : u'LastTradeDateTimeLong',
 	u'lt_dts'  : u'LastTradeDateTime',
 	u'c'       : u'Change',
-	u'div'     : u'Dividend',
-	u'yld'     : u'Yield',
-	u'c'       : u'ChangePercent',
-	u'c_fix'   : u'';
-	u'cp'      : u'',
+#	u'div'     : u'Dividend',
+#	u'yld'     : u'Yield',
+	u'c_fix'   : u'',
+	u'cp'       : u'ChangePercent',
 	u'cp_fix'  : u'',
 	u'ccol'    : u'',
 	u'pcls_fix': u'PreviousClosePrice',
@@ -80,23 +89,25 @@ googleFinanceKeyToFullName = {
 	u'beta'    : u'',
 	u'eps'     : u'',
 	u'shares'  : u'TotalSharesOnMarket',
-	u'inst_own': u'',
+#	u'inst_own': u'',
 	u'name'    : u'',
-	u'type'    : u'',
-	u'el'      : u'ExtHrsLastTradePrice',
-	u'el_cur'  : u'ExtHrsLastTradeWithCurrency',
-	u'elt'     : u'ExtHrsLastTradeDateTimeLong',
-	u'ec'      : u'ExtHrsChange',
-	u'ecp'     : u'ExtHrsChangePercent',
+	u'type'    : u''
+#	u'el'      : u'ExtHrsLastTradePrice',
+#	u'el_cur'  : u'ExtHrsLastTradeWithCurrency',
+#	u'elt'     : u'ExtHrsLastTradeDateTimeLong',
+#	u'ec'      : u'ExtHrsChange',
+#	u'ecp'     : u'ExtHrsChangePercent'
 }
 
 googleFinanceKeys = googleFinanceKeyToFullName.keys();
 
+googleFinanceURL = "http://www.google.com/finance/info?infotype=infoquoteall&q="; #Add 'MARKET:TICKER' at the end
 
 
-def retrieveCurrentStockData(stocks):
+
+def retrieveCurrentStockData(market, stocks):
 	"""
-	Retrive Google Finance information on a set of stocks
+	Retrive Google Finance information on a set of stocks using the googlefinance module
 	stocks: a list of strings, each string is the ticker for a stock
 	returns a dictionary where each key is a ticker and each value is the google finance information (in dictionary form) for that ticker
 	"""
@@ -110,9 +121,30 @@ def retrieveCurrentStockData(stocks):
 	#stockData now has the quotes from google finance as the values {stock1:Quote, stock2:Quote, ...}
 	return stockData;
 
+def retrieveCurrentStockData2(market, stocks):
+	"""
+	Retrieve Google Finance informatin on a set of stocks using urllib
+	returns a dictionary where each key is a ticker and each value is the google finance information (in dictionary form) for that ticker
+	"""
+
+	global googleFinanceURL;
+	stockData = dict.fromkeys(stocks);
+
+	for stock in stocks:
+		print("Retrieving for " + googleFinanceURL + market + ':' + stock)
+		r = Request(googleFinanceURL + market + ':' + stock);
+		response = urlopen(r)
+		content = response.read().decode('ascii', 'ignore').strip();
+		content = content[3:];
+
+		stockInfo = json.loads(content);
+		stockData[stock] = stockInfo[0];
+
+	return stockData;
 
 
-def retrieveHistoricalStockData(stocks):
+
+def retrieveHistoricalStockData(market, stocks):
 	"""
 	Uses YahooFinance to gather historical data on stock listings
 	"""
@@ -131,8 +163,11 @@ def main():
 		print(err);
 		sys.exit();
 
+	market = None;
 	stocks = [];
 	for opt, arg in opts:
+		if (opt == "--market"):
+			market = arg;
 		if (opt == "--stocks"):
 			stocks = arg.replace(', ', ',').split(',');
 
@@ -142,12 +177,17 @@ def main():
 		sys.exit();
 
 	#
-	currentStockData = retrieveCurrentStockData(stocks);
+	if (market is None):
+		print("Please specify the market you wish to retrieve data from");
+		sys.exit();
+
+	#
+	currentStockData = retrieveCurrentStockData2(market, stocks);
 	print(str(currentStockData));
 
 	print();
 
-	historicalStockData = retrieveHistoricalStockData(stocks);
+	historicalStockData = retrieveHistoricalStockData(market, stocks);
 	print(str(historicalStockData));
 
 
