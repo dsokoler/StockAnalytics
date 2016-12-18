@@ -2,8 +2,9 @@
 #-DO RIGHT NOW:
 #
 #-Urgent:
-# -Convert this entire program to C, its finance and should be fast
-# -Use Yahoo Finance API (or some other API) to retrive historical data for stocks
+# -Research types of stock analysis (http://www.investopedia.com)
+# -Read through quantarisk.com for good blog posts
+# -Change over from using googlefinance module to getting posts manually (see quantarisk blog post on retrieving info from google finance)
 #
 #-Less Urgent:
 # -Build an sqlite db to store this information so we don't have to go get it repeatedly
@@ -17,59 +18,79 @@
 #  -http://www.programmableweb.com/api/open-exchange-rates
 #  -http://www.programmableweb.com/api/world-bank
 # -Figure out how to use Bloomberg API with python (or build C program and integrate with python) (http://www.programmableweb.com/api/bloomberg)
+# -Find info on stock performance by market (tech, clothing, finance, etc) and built that into the analytics of stocks
 
 #INSTALL GOOGLEFINANCE BEFORE RUNNING
-import googlefinance, sys, getopt
-from yahoo_finance import Share
+import sys, getopt
+
+importError = False;
+try:
+	import googlefinance
+except ImportError:
+	print("Please install googlefinance : 'pip install googlefinance'");
+	importError = True;
+
+try:
+	from yahoo_finance import Share
+except ImportError:
+	print("Please install yahoo-finance : 'pip install yahoo-finance'");
+	importError = True;
+
+if (importError):
+	sys.exit();
+
+
 
 optionsList = [""];
 longOptionsList = ["stocks="];
 
-googleFinanceFullNames = [
-	u'ID',
-	u'StockSymbol',
-	u'Index',
-	u'LastTradePrice',
-	u'LastTradeWithCurrency',
-	u'LastTradeTime',
-	u'LastTradeDateTime',
-	u'LastTradeDateTimeLong',
-	u'Dividend',
-	u'Yield',
-	u'LastTradeSize',
-	u'Change',
-	u'ChangePercent',
-	u'ExtHrsLastTradePrice',
-	u'ExtHrsLastTradeWithCurrency',
-	u'ExtHrsLastTradeDateTimeLong',
-	u'ExtHrsChange',
-	u'ExtHrsChangePercent',
-	u'PreviousClosePrice'
-]
-
 googleFinanceKeyToFullName = {
-    u'id'     : u'ID',
-    u't'      : u'StockSymbol',
-    u'e'      : u'Index',
-    u'l'      : u'LastTradePrice',
-    u'l_cur'  : u'LastTradeWithCurrency',
-    u'ltt'    : u'LastTradeTime',
-    u'lt_dts' : u'LastTradeDateTime',
-    u'lt'     : u'LastTradeDateTimeLong',
-    u'div'    : u'Dividend',
-    u'yld'    : u'Yield',
-    u's'      : u'LastTradeSize',
-    u'c'      : u'Change',
-    u'c'      : u'ChangePercent',
-    u'el'     : u'ExtHrsLastTradePrice',
-    u'el_cur' : u'ExtHrsLastTradeWithCurrency',
-    u'elt'    : u'ExtHrsLastTradeDateTimeLong',
-    u'ec'     : u'ExtHrsChange',
-    u'ecp'    : u'ExtHrsChangePercent',
-    u'pcls_fix': u'PreviousClosePrice'
+#Abbreviation  : Full Name
+	u'id'      : u'ID',
+	u't'       : u'StockSymbol',
+	u'e'       : u'Index',
+	u'l'       : u'LastTradePrice',
+	u'l_cur'   : u'LastTradeWithCurrency',
+	u'l_fix'   : u'',
+	u's'       : u'LastTradeSize',
+	u'ltt'     : u'LastTradeTime',
+	u'lt'      : u'LastTradeDateTimeLong',
+	u'lt_dts'  : u'LastTradeDateTime',
+	u'c'       : u'Change',
+	u'div'     : u'Dividend',
+	u'yld'     : u'Yield',
+	u'c'       : u'ChangePercent',
+	u'c_fix'   : u'';
+	u'cp'      : u'',
+	u'cp_fix'  : u'',
+	u'ccol'    : u'',
+	u'pcls_fix': u'PreviousClosePrice',
+	u'eo'      : u'',
+	u'delay'   : u'',
+	u'op'      : u'',
+	u'hi'      : u'',
+	u'lo'      : u'',
+	u'vo'      : u'',
+	u'avvo'    : u'',
+	u'hi52'    : u'',
+	u'lo52'    : u'',
+	u'mc'      : u'',
+	u'pe'      : u'',
+	u'fwpe'    : u'',
+	u'beta'    : u'',
+	u'eps'     : u'',
+	u'shares'  : u'TotalSharesOnMarket',
+	u'inst_own': u'',
+	u'name'    : u'',
+	u'type'    : u'',
+	u'el'      : u'ExtHrsLastTradePrice',
+	u'el_cur'  : u'ExtHrsLastTradeWithCurrency',
+	u'elt'     : u'ExtHrsLastTradeDateTimeLong',
+	u'ec'      : u'ExtHrsChange',
+	u'ecp'     : u'ExtHrsChangePercent',
 }
 
-#Get keys by doing googleFinanceKeyToFullName.keys().  Won't be ordered
+googleFinanceKeys = googleFinanceKeyToFullName.keys();
 
 
 
