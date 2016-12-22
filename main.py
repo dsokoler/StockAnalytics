@@ -3,6 +3,8 @@
 #
 #-Urgent:
 # -Research types of stock analysis (http://www.investopedia.com)
+#  -Build in Warren Buffet's buy on (P/E) * (P/BV) <= 22.5 strategy.
+#  -Build in a calculator to determine how much we could make in X number of years with a Y investment (based on the average % returns in the past Z years)
 # -Read through quantarisk.com for good blog posts
 # -Change over from using googlefinance module to getting posts manually (see quantarisk blog post on retrieving info from google finance)
 #
@@ -24,7 +26,6 @@
 #		market hours from 9:30am to 4:00pm
 #		after-market hours from 4:00pm to 8:00pm (http://www.investopedia.com/terms/a/afterhourstrading.asp)
 
-#INSTALL GOOGLEFINANCE BEFORE RUNNING
 import sys, getopt, json
 
 importError = False;
@@ -34,6 +35,7 @@ except ImportError:
 	print("Please install googlefinance : 'pip install googlefinance'");
 	importError = True;
 
+#For help see https://github.com/lukaszbanasiak/yahoo-finance
 try:
 	from yahoo_finance import Share
 except ImportError:
@@ -46,13 +48,25 @@ except ImportError:  # python 2
 	print("Please install urllib : 'pip install urllib'");
 	importError = True;
 
+try:
+	from Stock import Stock
+	from Stock import reject_outliers
+except ImportError:
+	print("Unable to find the Stock module");
+	importError = True;
+
+#Pandas is for datetimes
+try:
+	import pandas as pd
+except ImportError:
+	print("Please install Pandas");
+	importError = True;
+
 if (importError):
 	sys.exit();
 
 
 
-optionsList = [""];
-longOptionsList = ["stocks=", "market="];
 
 googleFinanceKeyToFullName = {
 #Abbreviation  : Full Name
@@ -81,8 +95,8 @@ googleFinanceKeyToFullName = {
 	u'lo'      : u'',
 	u'vo'      : u'',
 	u'avvo'    : u'',
-	u'hi52'    : u'',
-	u'lo52'    : u'',
+	u'hi52'    : u'52WeekHigh',
+	u'lo52'    : u'52WeekLow',
 	u'mc'      : u'',
 	u'pe'      : u'',
 	u'fwpe'    : u'',
@@ -90,7 +104,7 @@ googleFinanceKeyToFullName = {
 	u'eps'     : u'',
 	u'shares'  : u'TotalSharesOnMarket',
 #	u'inst_own': u'',
-	u'name'    : u'',
+	u'name'    : u'StockFullName',
 	u'type'    : u''
 #	u'el'      : u'ExtHrsLastTradePrice',
 #	u'el_cur'  : u'ExtHrsLastTradeWithCurrency',
@@ -132,8 +146,14 @@ def retrieveCurrentStockData2(market, stocks):
 
 	for stock in stocks:
 		print("Retrieving for " + googleFinanceURL + market + ':' + stock)
-		r = Request(googleFinanceURL + market + ':' + stock);
-		response = urlopen(r)
+		
+		try:
+			r = Request(googleFinanceURL + market + ':' + stock);
+			response = urlopen(r)
+		except urllib.error.HTTPError:
+			print("HTTPError");
+			return None;
+
 		content = response.read().decode('ascii', 'ignore').strip();
 		content = content[3:];
 
@@ -151,6 +171,8 @@ def retrieveHistoricalStockData(market, stocks):
 	return {stock:Share(stock) for stock in stocks};
 
 
+optionsList = [""];
+longOptionsList = ["stocks=", "market=", "startDate=", "endDate=", "outlier=", "removeOutliers"];
 def main():
 
 	"""
@@ -165,11 +187,42 @@ def main():
 
 	market = None;
 	stocks = [];
+	startDate = None;
+	endDate = None;
+	outlier = 1;
+	removeOutliers = False;
+
 	for opt, arg in opts:
 		if (opt == "--market"):
 			market = arg;
-		if (opt == "--stocks"):
+		
+		elif (opt == "--stocks"):
 			stocks = arg.replace(', ', ',').split(',');
+		
+		elif (opt == "--startDate"):
+			try:
+				startDate = pd.to_datetime(arg);
+			except Exception as valueError:
+				print("Invalid --startDate option: " + arg);
+				print(str(valueError));
+		
+		elif (opt == "--endDate"):
+			try:
+				endDate = pd.to_datetime(arg);
+			except Exception as valueError:
+				print("Invalid --endDate option: " + arg);
+				print(str(valueError));
+
+		#A number is considered an outlier if it is more than X std deviations away from the mean
+		elif(opt == "--outlier"):
+			try:
+				outlier = int(arg)
+			except ValueError:
+				print("Outlier specification should be an integer, defaulting to 1");
+
+		elif (opt == "--removeOutliers"):
+			removeOutliers = True;
+
 
 	#empty lists identify as false
 	if (not stocks):
@@ -184,11 +237,25 @@ def main():
 	#
 	currentStockData = retrieveCurrentStockData2(market, stocks);
 	print(str(currentStockData));
-
 	print();
 
 	historicalStockData = retrieveHistoricalStockData(market, stocks);
 	print(str(historicalStockData));
+	print();
+
+	#Build an array of our Stock objects
+	stockObjects = [Stock(stock) for stock in stocks];
+	for stock in stockObjects:
+		stock.retrieveRatios();
+
+		if (startDate is None):
+			startDate = pd.to_datetime('2007-01-01');
+		if (endDate is None):
+			endDate = pd.to_datetime('today');
+		stock.plotPEtoPBV(startDate, endDate);
+
+		decision = stock.makeDecisionInTimeframe(startDate, endDate, outlier, removeOutliers);
+		print("Decision: " + str(decision));
 
 
 
