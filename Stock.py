@@ -75,20 +75,26 @@ class Stock:
 		self.earliestDate = None;	#Earliest date seen in our dataset
 		self.latestDate = None;		#Latest date seen in our dataset
 
-		self.opens = {}			#Holds date to open price
+		self.opens = {};		#Holds date to open price
 		self.retrieveOpens();
 		
-		self.closes = {}		#Holds date to close price
+		self.closes = {};		#Holds date to close price
 		self.retrieveCloses();
 		
-		self.highs = {}			#Holds date to high price
+		self.highs = {};		#Holds date to high price
 		self.retrieveHighs();
 		
-		self.lows = {}			#Holds date to low price
+		self.lows = {};			#Holds date to low price
 		self.retrieveLows();
+
+		self.volumes = {};		#Holds volumes for the stock
+		self.retrieveVolumes();
 
 		self.stochastics = {};	#Holds stochastic information about the stock
 		self.calculateStochastics();
+
+		self.mfv = {};
+		self.calculateMFV();
 
 
 
@@ -180,6 +186,71 @@ class Stock:
 
 
 
+	def retrieveVolumes(self):
+		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_volume".format(self.ticker);
+		r = requests.get(url, auth=(Stock.username, Stock.password));
+		d = r.json();
+
+		for item in d["data"]:
+			if (item["value"] == "nm"):
+				continue;
+
+			date = item["date"];
+			year = int(date[0:4]);
+			month = int(date[5:7]);
+			day = int(date[8:10]);
+
+			if (year not in self.volumes.keys()):
+				self.volumes[year] = {};
+			if (month not in self.volumes[year].keys()):
+				self.volumes[year][month] = {};
+
+			value = item["value"];
+			self.volumes[year][month][day] = value;
+
+			datetime = pd.to_datetime(date);
+
+			if (self.earliestDate is None or datetime < self.earliestDate):
+				self.earliestDate = datetime;
+			if (self.latestDate is None or datetime > self.latestDate):
+				self.latestDate = datetime;
+
+
+
+
+	def retrieveRatios(self):
+		#Set up our data holder
+		historicData = {};
+		historicData["PE"] = {};
+		historicData["PBV"] = {};
+
+		url = "https://api.intrinio.com/historical_data?identifier={0}&item={1}";
+
+		keys = [
+			("PE", "pricetoearnings"),
+			("PBV", "pricetobook")
+		];
+
+		#Get information from API
+		for keyset in keys:
+			apiUrl = url.format(self.ticker, keyset[1]);
+			r = requests.get(apiUrl, auth=(Stock.username, Stock.password));
+			d = r.json();
+
+			if (d["data"] == None):
+				print("No data for " + self.ticker);
+				break;
+
+			for item in d["data"]:
+				if (item["value"] == "nm"):
+					continue;
+
+				historicData[keyset[0]][item["date"]] = item["value"];
+
+		self.information = historicData;
+
+
+
 	def calculateStochastics(self):
 		"""
 		'K': 100 * [(C - L5) / (H5 - L5)]
@@ -200,8 +271,6 @@ class Stock:
 		currentDate = self.latestDate;
 
 		lastThreeKs = [];
-
-		print(str(date) + " :: " + str(currentDate));
 
 		#Calculate stochastics for every date we have
 		while(date != currentDate):
@@ -250,36 +319,120 @@ class Stock:
 
 
 
-	def retrieveRatios(self):
-		#Set up our data holder
-		historicData = {};
-		historicData["PE"] = {};
-		historicData["PBV"] = {};
+	def calculateMFV(self):
+		"""
+		Money Flow Multiplier = [(Close - Low) - (High - Close)] / (High - Low)  |  Should be -1 <= x <= 1
+		Money Flow Volume = MFM * (Volume for Period)
+		AD = (Previous AD) + MFV
 
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item={1}";
+		Period is 'day', 'month', 'year'
+		"""
 
-		keys = [
-			("PE", "pricetoearnings"),
-			("PBV", "pricetobook")
-		];
+		#Do the calculations for yearly so we can do yearly AD later
+		for year in list(self.volumes.keys()):
+			yearlyMFM = 0;
+			yearlyVolumeAverage = 0;
+			numYearlyVolumes = 0;
 
-		#Get information from API
-		for keyset in keys:
-			apiUrl = url.format(self.ticker, keyset[1]);
-			r = requests.get(apiUrl, auth=(Stock.username, Stock.password));
-			d = r.json();
+			#Do the calculations for monthly so we can do monthly AD later
+			for month in list(self.volumes[year].keys()):
+				monthlyMFM = 0;
+				monthlyVolumeAverage = 0;
+				numMonthlyVolumes = 0;
 
-			if (d["data"] == None):
-				print("No data for " + self.ticker);
-				break;
+				#Do the calculations for daily so we can do daily AD later
+				for day in list(self.volumes[year][month].keys()):
+					date = "{0}-{1:0>2}-{2:0>2}".format(year, month, day);
 
-			for item in d["data"]:
-				if (item["value"] == "nm"):
-					continue;
+					close = self.closes[date];
+					high = self.highs[date];
+					low = self.lows[date];
 
-				historicData[keyset[0]][item["date"]] = item["value"];
 
-		self.information = historicData;
+					#Calculate daily MFM and MFV
+					#-MFM as zero affects nothing, and helps avoid ZeroDivisionError (when high == low)
+					mfm = 0;
+					if (high != low):
+						mfm = ((close - low) - (high - close)) / (high - low);
+					mfv = mfm * self.volumes[year][month][day];
+
+					#Ensure we don't get KeyErrors
+					if (year not in self.mfv.keys()):
+						self.mfv[year] = {};
+					if (month not in self.mfv[year].keys()):
+						self.mfv[year][month] = {};
+
+					self.mfv[year][month][day] = mfv;
+		'''					
+					#Update our cumulative monthly MFM, volume, and count
+					monthlyMFM += mfm;
+					monthlyVolumeAverage += self.volumes[year][month][day];
+					numMonthlyVolumes += 1;
+					
+					#Update our cumulative yearly MFM, volume, and count
+					yearlyMFM += mfm;
+					yearlyVolumeAverage += self.volumes[year][month][day];
+					numYearlyVolumes += 1;
+
+				#Calculate our monthly MFV
+				monthlyVolumeAverage = (monthlyVolumeAverage / numMonthlyVolumes);
+				monthlyMFM = (monthlyMFM / numMonthlyVolumes);
+				monthlyMFV = (monthlyMFM * monthlyVolumeAverage);
+				self.mfv[year][month]["MFV"] = monthlyMFV;
+
+			#Calculate our yearly MFV
+			yearlyVolumeAverage = (yearlyVolumeAverage / numYearlyVolumes);
+			yearlyMFM = (yearlyMFM / numYearlyVolumes);
+			yearlyMFV = (yearlyMFM * yearlyVolumeAverage);
+			self.mfv[year]["MFV"] = yearlyMFV;
+
+		print(str(self.mfv));
+		'''
+
+
+
+	#BUGGY AF, GOOGLE RETURNS AD OF 33 MILLION, should be at ~2500
+	def calculateAD(self, startDate, endDate):
+		"""
+		Calculates the Accumulation/Distribution for a time interval at a set granularity
+		AD = (Previous AD) + MFV
+		"""
+		date = None;
+		if (startDate is None):
+			minYear = min(self.mfv.keys());
+			minMonth = min(self.mfv[minYear].keys());
+			minDay = min(self.mfv[minYear][minMonth]);
+			date = "{0}-{1:0>2}-{2:0>2}".format(minYear, minMonth, minDay);
+		else:
+			date = startDate;
+		
+		currentDate = None;
+		if (endDate is None):
+			maxYear = max(self.mfv.keys());
+			maxMonth = max(self.mfv[minYear].keys());
+			maxDay = max(self.mfv[minYear][minMonth]);
+			currentDate = "{0}-{1:0>2}-{2:0>2}".format(maxYear, maxMonth, maxDay);
+		else:
+			currentDate = endDate;
+
+		ad = 0;
+		date = pd.to_datetime(date);
+		currentDate = pd.to_datetime(currentDate);
+		while (date != currentDate):
+			strDate = str(date);
+			year = int(strDate[0:4]);
+			month = int(strDate[5:7]);
+			day = int(strDate[8:10]);
+
+			try:
+				ad += self.mfv[year][month][day];
+			except KeyError:
+				date += pd.Timedelta('1 day');
+				continue;
+
+			date += pd.Timedelta('1 day');
+
+		return ad;
 
 
 
@@ -311,10 +464,7 @@ class Stock:
 		self.ratioWithoutOutliers = avg2;
 
 
-		print("Ratio: " + str(avg2) + "        Std dev: " + str(std2));
 		self.decision = (avg2 <= self.limit);
-
-		print("Ratio: " + str(avg) + "        Std dev: " + str(std));
 		self.decision = (avg <= self.limit);
 
 

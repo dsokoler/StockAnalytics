@@ -145,7 +145,7 @@ def retrieveCurrentStockData2(market, stocks):
 	stockData = dict.fromkeys(stocks);
 
 	for stock in stocks:
-		print("Retrieving for " + googleFinanceURL + market + ':' + stock)
+		#print("Retrieving for " + googleFinanceURL + market + ':' + stock)
 		
 		try:
 			r = Request(googleFinanceURL + market + ':' + stock);
@@ -243,12 +243,12 @@ def main():
 
 	#
 	currentStockData = retrieveCurrentStockData2(market, stocks);
-	print(str(currentStockData));
-	print();
+	#print(str(currentStockData));
+	#print();
 
 	historicalStockData = retrieveHistoricalStockData(market, stocks);
-	print(str(historicalStockData));
-	print();
+	#print(str(historicalStockData));
+	#print();
 
 	if (startDate is None):
 		startDate = pd.to_datetime('2007-01-01');
@@ -258,11 +258,8 @@ def main():
 	#Build an array of our Stock objects
 	stockObjects = [Stock(stock, startDate, endDate, limit) for stock in stocks];
 	for stock in stockObjects:
-		print("Decision: " + str(stock.decision));
-
-	print()
-
-
+		ad = stock.calculateAD(None, None);
+		print(str(ad));
 
 if __name__ == "__main__":
 	try:
