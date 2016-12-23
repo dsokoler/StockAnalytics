@@ -172,7 +172,7 @@ def retrieveHistoricalStockData(market, stocks):
 
 
 optionsList = [""];
-longOptionsList = ["stocks=", "market=", "startDate=", "endDate=", "outlier=", "removeOutliers"];
+longOptionsList = ["stocks=", "market=", "limit=", "startDate=", "endDate=", "outlier=", "removeOutliers"];
 def main():
 
 	"""
@@ -187,6 +187,7 @@ def main():
 
 	market = None;
 	stocks = [];
+	limit = 22.5;
 	startDate = None;
 	endDate = None;
 	outlier = 1;
@@ -198,6 +199,12 @@ def main():
 		
 		elif (opt == "--stocks"):
 			stocks = arg.replace(', ', ',').split(',');
+
+		elif (opt == "--limit"):
+			try:
+				limit = int(arg);
+			except ValueError:
+				print("Limit should be an integer.  Defaulting to 22.5")
 		
 		elif (opt == "--startDate"):
 			try:
@@ -243,19 +250,17 @@ def main():
 	print(str(historicalStockData));
 	print();
 
+	if (startDate is None):
+		startDate = pd.to_datetime('2007-01-01');
+	if (endDate is None):
+		endDate = pd.to_datetime('today');
+
 	#Build an array of our Stock objects
-	stockObjects = [Stock(stock) for stock in stocks];
+	stockObjects = [Stock(stock, startDate, endDate, limit) for stock in stocks];
 	for stock in stockObjects:
-		stock.retrieveRatios();
+		print("Decision: " + str(stock.decision));
 
-		if (startDate is None):
-			startDate = pd.to_datetime('2007-01-01');
-		if (endDate is None):
-			endDate = pd.to_datetime('today');
-		stock.plotPEtoPBV(startDate, endDate);
-
-		decision = stock.makeDecisionInTimeframe(startDate, endDate, outlier, removeOutliers);
-		print("Decision: " + str(decision));
+	print()
 
 
 
