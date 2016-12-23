@@ -250,16 +250,11 @@ def main():
 	#print(str(historicalStockData));
 	#print();
 
-	if (startDate is None):
-		startDate = pd.to_datetime('2007-01-01');
-	if (endDate is None):
-		endDate = pd.to_datetime('today');
-
 	#Build an array of our Stock objects
 	stockObjects = [Stock(stock, startDate, endDate, limit) for stock in stocks];
 	for stock in stockObjects:
-		ad = stock.calculateAD(None, None);
-		print(str(ad));
+		stock.plotAD(startDate, endDate);
+		stock.plotCloses(startDate, endDate);
 
 if __name__ == "__main__":
 	try:

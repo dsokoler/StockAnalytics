@@ -12,6 +12,7 @@ except ImportError:
 #MatPlotLib for visualizations
 try:
 	import matplotlib.pyplot as plt;
+	from matplotlib.ticker import FuncFormatter
 except ImportError:
 	print("Please install matplotlib: 'pip install matplotlib'");
 	importError = True;
@@ -69,32 +70,43 @@ class Stock:
 		self.limit = limit;					#The PE*PBV limit (less means a better stock, but is harder to find)
 		self.outlier = outlier;				#Number of standard deviations to be considered an outlier
 		self.retrieveRatios();
-		self.makeDecisionInTimeframe(startDate, endDate, outlier);
+		#self.makeDecisionInTimeframe(startDate, endDate, outlier);
 
 		#		
 		self.earliestDate = None;	#Earliest date seen in our dataset
 		self.latestDate = None;		#Latest date seen in our dataset
 
 		self.opens = {};		#Holds date to open price
+		self.openList = [];		#(Date, open)
 		self.retrieveOpens();
 		
 		self.closes = {};		#Holds date to close price
+		self.closeList = [];	#(Date, close)
 		self.retrieveCloses();
 		
 		self.highs = {};		#Holds date to high price
+		self.highList = [];		#(Date, high)
 		self.retrieveHighs();
 		
 		self.lows = {};			#Holds date to low price
+		self.lowList = [];		#(Date, low)
 		self.retrieveLows();
 
 		self.volumes = {};		#Holds volumes for the stock
+		self.volumeList = [];	#(Date, volume)
 		self.retrieveVolumes();
 
-		self.stochastics = {};	#Holds stochastic information about the stock
+		self.stochastics = {};		#Holds stochastic information about the stock
+		self.stochasticList = [];	#(Date, K, D)
 		self.calculateStochastics();
 
-		self.mfv = {};
-		self.calculateMFV();
+		self.ad = {};			#Holds Accumulation/Distribution information
+		self.adList = [];		#(Date, AD)
+		self.calculateAD();
+
+		self.aroon = {};		#Holds Aroon Indicator Data
+		self.aroonList = [];	#(Date, Aroon Up, Aroon Down);
+		self.calculateAroon();
 
 
 
@@ -118,6 +130,8 @@ class Stock:
 			if (self.latestDate is None or datetime > self.latestDate):
 				self.latestDate = datetime;
 
+			self.openList.append( [datetime, value] );
+
 
 
 	def retrieveCloses(self):
@@ -139,6 +153,8 @@ class Stock:
 				self.earliestDate = datetime;
 			if (self.latestDate is None or datetime > self.latestDate):
 				self.latestDate = datetime;
+
+			self.closeList.append( [datetime, value] );
 
 
 
@@ -162,6 +178,8 @@ class Stock:
 			if (self.latestDate is None or datetime > self.latestDate):
 				self.latestDate = datetime;
 
+			self.highList.append( [datetime, value] );
+
 
 
 	def retrieveLows(self):
@@ -183,6 +201,8 @@ class Stock:
 				self.earliestDate = datetime;
 			if (self.latestDate is None or datetime > self.latestDate):
 				self.latestDate = datetime;
+
+			self.lowList.append( [datetime, value] );
 
 
 
@@ -214,6 +234,8 @@ class Stock:
 				self.earliestDate = datetime;
 			if (self.latestDate is None or datetime > self.latestDate):
 				self.latestDate = datetime;
+
+			self.volumeList.append( [datetime, value] );
 
 
 
@@ -315,11 +337,13 @@ class Stock:
 			self.stochastics[dateStr]['K'] = k;
 			self.stochastics[dateStr]['D'] = d;
 
+			self.stochasticList.append( [date, k, d] );
+
 			date += pd.Timedelta("1 day");
 
 
 
-	def calculateMFV(self):
+	def calculateAD(self):
 		"""
 		Money Flow Multiplier = [(Close - Low) - (High - Close)] / (High - Low)  |  Should be -1 <= x <= 1
 		Money Flow Volume = MFM * (Volume for Period)
@@ -327,21 +351,16 @@ class Stock:
 
 		Period is 'day', 'month', 'year'
 		"""
+		ad = 0;
 
 		#Do the calculations for yearly so we can do yearly AD later
-		for year in list(self.volumes.keys()):
-			yearlyMFM = 0;
-			yearlyVolumeAverage = 0;
-			numYearlyVolumes = 0;
+		for year in sorted(list(self.volumes.keys())):
 
 			#Do the calculations for monthly so we can do monthly AD later
-			for month in list(self.volumes[year].keys()):
-				monthlyMFM = 0;
-				monthlyVolumeAverage = 0;
-				numMonthlyVolumes = 0;
+			for month in sorted(list(self.volumes[year].keys())):
 
 				#Do the calculations for daily so we can do daily AD later
-				for day in list(self.volumes[year][month].keys()):
+				for day in sorted(list(self.volumes[year][month].keys())):
 					date = "{0}-{1:0>2}-{2:0>2}".format(year, month, day);
 
 					close = self.closes[date];
@@ -355,117 +374,76 @@ class Stock:
 					if (high != low):
 						mfm = ((close - low) - (high - close)) / (high - low);
 					mfv = mfm * self.volumes[year][month][day];
+					ad += mfv;
 
 					#Ensure we don't get KeyErrors
-					if (year not in self.mfv.keys()):
-						self.mfv[year] = {};
-					if (month not in self.mfv[year].keys()):
-						self.mfv[year][month] = {};
+					if (year not in self.ad.keys()):
+						self.ad[year] = {};
+					if (month not in self.ad[year].keys()):
+						self.ad[year][month] = {};
 
-					self.mfv[year][month][day] = mfv;
-		'''					
-					#Update our cumulative monthly MFM, volume, and count
-					monthlyMFM += mfm;
-					monthlyVolumeAverage += self.volumes[year][month][day];
-					numMonthlyVolumes += 1;
-					
-					#Update our cumulative yearly MFM, volume, and count
-					yearlyMFM += mfm;
-					yearlyVolumeAverage += self.volumes[year][month][day];
-					numYearlyVolumes += 1;
-
-				#Calculate our monthly MFV
-				monthlyVolumeAverage = (monthlyVolumeAverage / numMonthlyVolumes);
-				monthlyMFM = (monthlyMFM / numMonthlyVolumes);
-				monthlyMFV = (monthlyMFM * monthlyVolumeAverage);
-				self.mfv[year][month]["MFV"] = monthlyMFV;
-
-			#Calculate our yearly MFV
-			yearlyVolumeAverage = (yearlyVolumeAverage / numYearlyVolumes);
-			yearlyMFM = (yearlyMFM / numYearlyVolumes);
-			yearlyMFV = (yearlyMFM * yearlyVolumeAverage);
-			self.mfv[year]["MFV"] = yearlyMFV;
-
-		print(str(self.mfv));
-		'''
+					#Fill in our data structures
+					self.ad[year][month][day] = ad;
+					self.adList.append( [pd.to_datetime(date), ad] );
 
 
 
-	#BUGGY AF, GOOGLE RETURNS AD OF 33 MILLION, should be at ~2500
-	def calculateAD(self, startDate, endDate):
+	def calculateAroon(periodLength):
 		"""
-		Calculates the Accumulation/Distribution for a time interval at a set granularity
-		AD = (Previous AD) + MFV
-		"""
-		date = None;
-		if (startDate is None):
-			minYear = min(self.mfv.keys());
-			minMonth = min(self.mfv[minYear].keys());
-			minDay = min(self.mfv[minYear][minMonth]);
-			date = "{0}-{1:0>2}-{2:0>2}".format(minYear, minMonth, minDay);
-		else:
-			date = startDate;
+		Measures if a security is in a trend, the magnitude of that trend, and whether that trend is likely to reverse (or not)
 		
-		currentDate = None;
-		if (endDate is None):
-			maxYear = max(self.mfv.keys());
-			maxMonth = max(self.mfv[minYear].keys());
-			maxDay = max(self.mfv[minYear][minMonth]);
-			currentDate = "{0}-{1:0>2}-{2:0>2}".format(maxYear, maxMonth, maxDay);
-		else:
-			currentDate = endDate;
+		Aroon Up:   ( (25 - Days Since 25 Day High) / 25 ) * 100
+		Aroon Down: ( (25 - Days Since 25 Day Low) / 25 ) * 100
+		"""
+		last25Highs = [];
+		last25Lows = [];
+		date = self.earliestDate;
+		currentDate = self.latestDate;
 
-		ad = 0;
-		date = pd.to_datetime(date);
-		currentDate = pd.to_datetime(currentDate);
-		while (date != currentDate):
-			strDate = str(date);
-			year = int(strDate[0:4]);
-			month = int(strDate[5:7]);
-			day = int(strDate[8:10]);
+		#Calculate Aroon Indicators for every date we have
+		while(date != currentDate):
+			dateStr = str(date).split(' ')[0]
+			year = int(date[0:4]);
+			month = int(date[5:7]);
+			day = int(date[8:10]);
 
-			try:
-				ad += self.mfv[year][month][day];
-			except KeyError:
-				date += pd.Timedelta('1 day');
-				continue;
+			#Retrieve highest value for this date
+			highValue = self.highs[dateStr];
+			last25Highs.append(highValue);
+			if (len(last25Highs) > periodLength):
+				last25Highs.pop(0);
 
+			#Retrieve lowest value for this date
+			lowValue = self.lows[dateStr];
+			last25Lows.append(lowValue);
+			if (len(last25Lows) > periodLength):
+				last25Lows.pop(0);
+
+			#Calculate Aroon Up
+			timeSinceHigh = periodLength - last25Highs.index(max(last25Highs));
+			aroonUp = ( (periodLength - timeSinceHigh) / periodLength ) * 100;
+
+			#Calculate Aroon Down
+			timeSinceLow = periodLength - last25Lows.index(min(last25Lows));
+			aroonDown = ( (periodLength - timeSinceLow) / periodLength ) * 100;
+
+			#Ensure we don't get KeyErrors
+			if (year not in self.aroon.keys()):
+				self.aroon[year] = {};
+			if (month not in self.aroon[year].keys()):
+				self.aroon[year][month] = {};
+			if (day not in self.aroon[year][month].keys()):
+				self.aroon[year][month][day] = {};
+
+			#Fill in our data structures
+			self.aroon[year][month][day]["Up"] = aroonUp;
+			self.aroon[year][month][day]["Down"] = aroonDown;
+			self.aroonList.append( [date, aroonUp, aroonDown] );
+
+			#Increment our counter
 			date += pd.Timedelta('1 day');
 
-		return ad;
 
-
-
-	def makeDecisionInTimeframe(self, startDate, endDate, outlier):
-		"""
-		Decide if this stock meets the limit criteria for a given timeframe
-		"""
-		ratioList = []
-
-		for key in self.information["PE"]:
-			keyDate = pd.to_datetime(key);
-			if (keyDate < startDate or keyDate > endDate):
-				continue;
-
-			pe = self.information["PE"][key];
-			pbv = self.information["PBV"][key];
-			ratio = pe*pbv;
-
-			ratioList.append(ratio);
-
-		npRatioList = np.asarray(ratioList);
-		avg = np.mean(npRatioList);
-		std = np.std(npRatioList);
-		self.ratio = avg;
-
-		npRatioListNoOutliers = reject_outliers(npRatioList, outlier);
-		avg2 = np.mean(npRatioListNoOutliers);
-		std2 = np.std(npRatioListNoOutliers);
-		self.ratioWithoutOutliers = avg2;
-
-
-		self.decision = (avg2 <= self.limit);
-		self.decision = (avg <= self.limit);
 
 
 
@@ -503,7 +481,10 @@ class Stock:
 
 		#Format plot
 		fig.suptitle(self.ticker + " (P/E)*(P/BV) Score Over Time")
-		plt.xlim(startDate, endDate);
+		
+		if (startDate is not None and endDate is not None):
+			plt.xlim(startDate, endDate);
+		
 		plt.ylim(lowestDecisionRatio, 100);
 		ax.set_xlabel("Date");
 		ax.set_ylabel("Indicator");
@@ -513,6 +494,116 @@ class Stock:
 		#Show plot
 		plt.show();
 
+
+
+	def plotAD(self, startDate, endDate):
+		"""
+		Plot this stock's Accumulation/Distribition Line
+		"""
+
+		toPlot = self.adList
+
+		#CAN EITHER TO THIS, OR JUST SET THE XLIM
+		if (startDate is None):
+			if (endDate is None):
+				pass;
+			else:
+				toPlot = [info for info in self.adList if info[0] <= endDate];
+		else:
+			if (endDate is None):
+				toPlot = [info for info in self.adList if info[0] >= startDate];
+			else:
+				toPlot = [info for info in self.adList if info[0] <= endDate and info[0] >= startDate]
+
+		fig, ax = plt.subplots();
+		ax.plot(*zip(*toPlot));
+		ax.hlines(0, toPlot[0][0], toPlot[-1][0], linewidth=2);
+
+		def millions(x, pos):
+			return '%1.0fM' % (x*1e-6)
+
+		formatter = FuncFormatter(millions);
+
+		fig.suptitle(self.ticker + " Accumulation/Distribution Line");
+		ax.set_xlabel("Date");
+		ax.set_ylabel("A/D");
+		ax.yaxis.set_major_formatter(formatter);
+		fig.autofmt_xdate();
+		plt.show();
+
+
+
+	def plotCloses(self, startDate, endDate):
+		"""
+		Plots the closes for a stock
+		"""
+		
+		toPlot = self.closeList
+
+		#CAN EITHER TO THIS, OR JUST SET THE XLIM
+		if (startDate is None):
+			if (endDate is None):
+				pass;
+			else:
+				toPlot = [info for info in self.closeList if info[0] <= endDate];
+		else:
+			if (endDate is None):
+				toPlot = [info for info in self.closeList if info[0] >= startDate];
+			else:
+				toPlot = [info for info in self.closeList if info[0] <= endDate and info[0] >= startDate]
+
+
+		fig, ax = plt.subplots();
+		ax.plot(*zip(*toPlot));
+
+		fig.suptitle(self.ticker + " Closes");
+		ax.set_xlabel("Date");
+		ax.set_ylabel("Close Price");
+		fig.autofmt_xdate();
+		plt.show();
+
+
+
+	def makeDecisionInTimeframe(self, startDate, endDate, outlier):
+		"""
+		Decide if this stock meets the limit criteria for a given timeframe
+		"""
+		sDate = startDate;
+		eDate = endDate
+		if (startDate is None):
+			sDate = pd.to_datetime('1800-01-01');
+		if (endDate is None):
+			eDate = pd.to_datetime('today');
+		ratioList = []
+
+		for key in self.information["PE"]:
+			keyDate = pd.to_datetime(key);
+			if (keyDate < sDate or keyDate > eDate):
+				continue;
+
+			try:
+				pe = self.information["PE"][key];
+				pbv = self.information["PBV"][key];
+			except KeyError:
+				continue;
+
+			ratio = pe*pbv;
+
+			ratioList.append(ratio);
+
+		npRatioList = np.asarray(ratioList);
+		avg = np.mean(npRatioList);
+		std = np.std(npRatioList);
+		self.ratio = avg;
+
+		npRatioListNoOutliers = reject_outliers(npRatioList, outlier);
+		avg2 = np.mean(npRatioListNoOutliers);
+		std2 = np.std(npRatioListNoOutliers);
+		self.ratioWithoutOutliers = avg2;
+
+
+		self.decision = (avg2 <= self.limit);
+		self.decision = (avg <= self.limit);
 
 
 
