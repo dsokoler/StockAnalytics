@@ -3,10 +3,6 @@
 #
 #-Urgent:
 # -Research types of stock analysis (http://www.investopedia.com)
-#  -Build in Warren Buffet's buy on (P/E) * (P/BV) <= 22.5 strategy.
-#  -Build in a calculator to determine how much we could make in X number of years with a Y investment (based on the average % returns in the past Z years)
-# -Read through quantarisk.com for good blog posts
-# -Change over from using googlefinance module to getting posts manually (see quantarisk blog post on retrieving info from google finance)
 #
 #-Less Urgent:
 # -Build an sqlite db to store this information so we don't have to go get it repeatedly
@@ -50,7 +46,6 @@ except ImportError:  # python 2
 
 try:
 	from Stock import Stock
-	from Stock import reject_outliers
 except ImportError:
 	print("Unable to find the Stock module");
 	importError = True;
@@ -172,7 +167,7 @@ def retrieveHistoricalStockData(market, stocks):
 
 
 optionsList = [""];
-longOptionsList = ["stocks=", "market=", "limit=", "startDate=", "endDate=", "outlier=", "removeOutliers"];
+longOptionsList = ["stocks=", "market=", "limit=", "startDate=", "endDate=", "outlier=", "removeOutliers", "period="];
 def main():
 
 	"""
@@ -192,6 +187,7 @@ def main():
 	endDate = None;
 	outlier = 1;
 	removeOutliers = False;
+	period = 26;		#Length of time for averages and indicators (in days)
 
 	for opt, arg in opts:
 		if (opt == "--market"):
@@ -230,6 +226,15 @@ def main():
 		elif (opt == "--removeOutliers"):
 			removeOutliers = True;
 
+		elif (opt == "--period"):
+			try:
+				period = int(arg);
+			except ValueError:
+				print("The 'Period' option should be an integer, defaulting to 26");
+
+			periodDatetime = pd.Timedelta(arg + ' days');
+			endDate = pd.to_datetime('today');
+			startDate = endDate - periodDatetime;
 
 	#empty lists identify as false
 	if (not stocks):
@@ -253,8 +258,7 @@ def main():
 	#Build an array of our Stock objects
 	stockObjects = [Stock(stock, startDate, endDate, limit) for stock in stocks];
 	for stock in stockObjects:
-		stock.plotAD(startDate, endDate);
-		stock.plotCloses(startDate, endDate);
+		stock.plotClosesLineGraph(startDate, endDate);
 
 if __name__ == "__main__":
 	try:

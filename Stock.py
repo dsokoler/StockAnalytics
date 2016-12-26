@@ -12,7 +12,8 @@ except ImportError:
 #MatPlotLib for visualizations
 try:
 	import matplotlib.pyplot as plt;
-	from matplotlib.ticker import FuncFormatter
+	import matplotlib.ticker as mticker
+	from matplotlib.finance import candlestick_ohlc
 except ImportError:
 	print("Please install matplotlib: 'pip install matplotlib'");
 	importError = True;
@@ -38,18 +39,13 @@ if (importError):
 
 class Stock:
 	"""
-	Represents a suite of methods utilized to conduct stock analysis in the way of Warren Buffet
-	Looks for stocks with a (P/E) * (P/BV) <= 22.5 (or the specified limit, default is 22.5)
-
-	P = (# of Outstanding Shares) * (Current Share Price)
-	E = ((Net Income) - (Dividends on Preferred Stock)) / (Average Outstanding Shares)
-		Dividends = (Equity's Dividend Rate) * (Par Value of the Preferred Stock)
-	BV = (Tangible Assets) - (Liabilities)	
+	The object where we store all of our stock information
 
 	Process:
 	 -Initialize stock object
-	 -Retrieve stock information (retrieveRatios)
-	 -Make decision (makeDecisionInTimeframe)
+	 -Retrieve stock information (retrieve methods)
+	 -Perform calculations (calculate methods)
+	 -PROFIT (hopefully)
 	"""
 
 	#Retrieve information needed to access Intrinio API
@@ -58,6 +54,10 @@ class Stock:
 	username = config["INTRINIO"]["username"];
 	password = config["INTRINIO"]["password"];
 
+	shortTermPeriod1 = 12;
+	shortTermPeriod2 = 26;
+	longTermPeriod1 = 50;
+	longTermPeriod2 = 200;
 
 	def __init__(self, ticker, startDate, endDate, limit, outlier=1):
 		self.ticker = ticker;				#Ticker of this stock
@@ -65,8 +65,17 @@ class Stock:
 		self.ratio = None;					#The ratio indicator with all data
 		self.ratioWithoutOutliers = None;	#The ratio indicator sans outliers
 		self.decision = None;				#Is this stock a good or bad pick
-		self.startDate = startDate;			#The start of the timeframe for our analysis
-		self.endDate = endDate;				#The end of the timeframe for our analysis
+		
+		if (startDate is None):
+			self.startDate = pd.to_datetime('1800-01-01');
+		else: 
+			self.startDate = startDate;			#The start of the timeframe for our analysis
+		
+		if (endDate is None):
+			self.endDate = pd.to_datetime('today');
+		else:
+			self.endDate = endDate;				#The end of the timeframe for our analysis
+		
 		self.limit = limit;					#The PE*PBV limit (less means a better stock, but is harder to find)
 		self.outlier = outlier;				#Number of standard deviations to be considered an outlier
 		self.retrieveRatios();
@@ -76,6 +85,7 @@ class Stock:
 		self.earliestDate = None;	#Earliest date seen in our dataset
 		self.latestDate = None;		#Latest date seen in our dataset
 
+		#Dictionary is for easy analysis at certain time periods, list is for easy plotting over time periods
 		self.opens = {};		#Holds date to open price
 		self.openList = [];		#(Date, open)
 		self.retrieveOpens();
@@ -106,9 +116,11 @@ class Stock:
 
 		self.aroon = {};		#Holds Aroon Indicator Data
 		self.aroonList = [];	#(Date, Aroon Up, Aroon Down);
-		self.calculateAroon();
+		self.calculateAroon(Stock.shortTermPeriod1);
 
 
+
+#------------------------------------Data Retrieval Methods---------------------------------------
 
 	def retrieveOpens(self):
 		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_open_price".format(self.ticker);
@@ -120,10 +132,13 @@ class Stock:
 				continue;
 
 			date = item["date"];
+			datetime = pd.to_datetime(date);
+
+			if (datetime < self.startDate or datetime > self.endDate):
+				continue;
+
 			value = item["value"];
 			self.opens[date] = value;
-
-			datetime = pd.to_datetime(date);
 
 			if (self.earliestDate is None or datetime < self.earliestDate):
 				self.earliestDate = datetime;
@@ -131,7 +146,6 @@ class Stock:
 				self.latestDate = datetime;
 
 			self.openList.append( [datetime, value] );
-
 
 
 	def retrieveCloses(self):
@@ -144,10 +158,13 @@ class Stock:
 				continue;
 
 			date = item["date"];
+			datetime = pd.to_datetime(date);
+
+			if (datetime < self.startDate or datetime > self.endDate):
+				continue;
+
 			value = item["value"];
 			self.closes[date] = value;
-
-			datetime = pd.to_datetime(date);
 
 			if (self.earliestDate is None or datetime < self.earliestDate):
 				self.earliestDate = datetime;
@@ -168,10 +185,13 @@ class Stock:
 				continue;
 
 			date = item["date"];
+			datetime = pd.to_datetime(date);
+			
+			if (datetime < self.startDate or datetime > self.endDate):
+				continue;
+
 			value = item["value"];
 			self.highs[date] = value;
-
-			datetime = pd.to_datetime(date);
 
 			if (self.earliestDate is None or datetime < self.earliestDate):
 				self.earliestDate = datetime;
@@ -192,10 +212,13 @@ class Stock:
 				continue;
 
 			date = item["date"];
+			datetime = pd.to_datetime(date);
+			
+			if (datetime < self.startDate or datetime > self.endDate):
+				continue;
+
 			value = item["value"];
 			self.lows[date] = value;
-
-			datetime = pd.to_datetime(date);
 
 			if (self.earliestDate is None or datetime < self.earliestDate):
 				self.earliestDate = datetime;
@@ -216,6 +239,11 @@ class Stock:
 				continue;
 
 			date = item["date"];
+			datetime = pd.to_datetime(date);
+
+			if (datetime < self.startDate or datetime > self.endDate):
+				continue;
+
 			year = int(date[0:4]);
 			month = int(date[5:7]);
 			day = int(date[8:10]);
@@ -227,8 +255,6 @@ class Stock:
 
 			value = item["value"];
 			self.volumes[year][month][day] = value;
-
-			datetime = pd.to_datetime(date);
 
 			if (self.earliestDate is None or datetime < self.earliestDate):
 				self.earliestDate = datetime;
@@ -267,12 +293,21 @@ class Stock:
 				if (item["value"] == "nm"):
 					continue;
 
-				historicData[keyset[0]][item["date"]] = item["value"];
+				date = item["date"];
+				datetime = pd.to_datetime(date);
+				
+				if (datetime < self.startDate or datetime > self.endDate):
+					continue;
+
+				historicData[keyset[0]][date] = item["value"];
 
 		self.information = historicData;
 
 
 
+#-----------------------------------Calculation Methods-----------------------------------------
+#Should probably break these up by type (trend/momentum prediction, overlap studies, etc)
+	
 	def calculateStochastics(self):
 		"""
 		'K': 100 * [(C - L5) / (H5 - L5)]
@@ -388,7 +423,7 @@ class Stock:
 
 
 
-	def calculateAroon(periodLength):
+	def calculateAroon(self, periodLength):
 		"""
 		Measures if a security is in a trend, the magnitude of that trend, and whether that trend is likely to reverse (or not)
 		
@@ -403,18 +438,30 @@ class Stock:
 		#Calculate Aroon Indicators for every date we have
 		while(date != currentDate):
 			dateStr = str(date).split(' ')[0]
-			year = int(date[0:4]);
-			month = int(date[5:7]);
-			day = int(date[8:10]);
+			year = int(dateStr[0:4]);
+			month = int(dateStr[5:7]);
+			day = int(dateStr[8:10]);
 
 			#Retrieve highest value for this date
-			highValue = self.highs[dateStr];
+			highValue = None;
+			try:
+				highValue = self.highs[dateStr];
+			except KeyError:
+				date += pd.Timedelta('1 day');
+				continue;
+
 			last25Highs.append(highValue);
 			if (len(last25Highs) > periodLength):
 				last25Highs.pop(0);
 
 			#Retrieve lowest value for this date
-			lowValue = self.lows[dateStr];
+			lowValue = None;
+			try:
+				lowValue = self.lows[dateStr];
+			except KeyError:
+				date += pd.Timedelta('1 day');
+				continue;
+
 			last25Lows.append(lowValue);
 			if (len(last25Lows) > periodLength):
 				last25Lows.pop(0);
@@ -445,7 +492,7 @@ class Stock:
 
 
 
-
+#-------------------------------Plotting Methods----------------------------------------
 
 	def plotPEtoPBV(self, startDate, endDate):
 		'''Plots the PE * PBV value for a stock'''
@@ -519,10 +566,11 @@ class Stock:
 		ax.plot(*zip(*toPlot));
 		ax.hlines(0, toPlot[0][0], toPlot[-1][0], linewidth=2);
 
+		#Formatter method to get us "10M, 1M, etc"
 		def millions(x, pos):
 			return '%1.0fM' % (x*1e-6)
 
-		formatter = FuncFormatter(millions);
+		formatter = mticker.FuncFormatter(millions);
 
 		fig.suptitle(self.ticker + " Accumulation/Distribution Line");
 		ax.set_xlabel("Date");
@@ -533,9 +581,10 @@ class Stock:
 
 
 
-	def plotCloses(self, startDate, endDate):
+	def plotClosesLineGraph(self, startDate, endDate):
 		"""
-		Plots the closes for a stock
+		Plots the closes for a stock as a line graph
+		Rough granularity, only at the day level b/c we don't have access to intraday trade info
 		"""
 		
 		toPlot = self.closeList
@@ -563,6 +612,16 @@ class Stock:
 		plt.show();
 
 
+
+	def plotClosesCandlestickOHLC(self, startDate, endDate):
+		"""
+		Plots the closes for a stock as a Candlestick OHLC plot
+		"""
+
+
+
+
+#-------------------------------Decision Making Methods----------------------------------------
 
 	def makeDecisionInTimeframe(self, startDate, endDate, outlier):
 		"""
@@ -596,6 +655,10 @@ class Stock:
 		std = np.std(npRatioList);
 		self.ratio = avg;
 
+		#Method to reject any data points outside 'm' standard deviations from the mean
+		def reject_outliers(data, m):
+			return data[abs(data - np.mean(data)) < m * np.std(data)]
+
 		npRatioListNoOutliers = reject_outliers(npRatioList, outlier);
 		avg2 = np.mean(npRatioListNoOutliers);
 		std2 = np.std(npRatioListNoOutliers);
@@ -604,94 +667,6 @@ class Stock:
 
 		self.decision = (avg2 <= self.limit);
 		self.decision = (avg <= self.limit);
-
-
-
-	def retrieveInformation(self):
-		"""
-		Retrieve as much information as we can in order to calcualte PE and PBV
-		User https://intrinio.com/sdk/web-api#
-		Other tags: http://docs.intrinio.com/tags/intrinio-public#historical-data
-		"""
-
-		#Stuff thats done on a monthly basis
-		keys = (
-			[("Shares", "volume"),
-			("SharePrice", "adj_close_price"),
-			],
-			"https://api.intrinio.com/historical_data?identifier={0}&item={1}&frequency=monthly"
-		);
-
-		#Stuff thats done on a yearly basis
-		keys2 = (
-			[("NetIncome", "netincome"),	#Doesn't seem to be any data on intrinio about net income
-			 ("Dividends", "cashdividendspershare")
-			],
-			"https://api.intrinio.com/historical_data?identifier={0}&item={1}&frequency=yearly"
-		);
-
-		#Stuff thats done on a daily basis
-		keys3 = (
-			[("AverageShares", "average_daily_volume")],
-			"https://api.intrinio.com/historical_data?identifier={0}&item={1}&frequency=daily"
-		);
-
-		#Stuff thats done every three months
-		keys4 = (
-			[("Dividends", "cashdividendspershare"),
-			 ("Assets", "totalassets"),
-			 ("Liabilities", "totalliabilities")
-			 ("PE", "pricetoearnings")
-			 ("PBV", "pricetobook")
-			],
-			"https://api.intrinio.com/historical_data?identifier={0}&item={1}"
-		);
-
-		historicData = {};
-
-		for keySet in keys[0]:
-			print("Filling for " + keySet[0]);
-			url = keys[1].format(self.ticker, keySet[1]);
-			r = requests.get(url, auth=(Stock.username, Stock.password));
-			
-			d = r.json();
-
-
-			if (keySet[0] == "Assets"):
-				print(str(d));
-
-
-			data = d["data"];
-			for info in data:
-				year = info["date"][:4];
-				month = info["date"][5:7];
-
-				#Apparantly people do stuff every three months, soooooooo
-				if (int(month) % 3 != 0):
-					continue;
-
-				#Fill set with empty dictionary to avoid key error
-				if (year not in historicData.keys()):
-					historicData[year] = {};
-				if (month not in historicData[year].keys()):
-					historicData[year][month] = {};
-
-				historicData[year][month][keySet[0]] = info["value"];
-
-		'''
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item={1}".format(self.ticker, "cashdividendspershare");
-		r = requests.get(url, auth=(username, password));
-		d = r.json();
-		print(str(d));
-		'''
-		print();
-		print(str(historicData));
-		print();
-
-		
-
-def reject_outliers(data, m):
-    return data[abs(data - np.mean(data)) < m * np.std(data)]
 
 
 
