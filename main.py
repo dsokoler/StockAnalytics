@@ -1,11 +1,15 @@
 #TODO:
 #-DO RIGHT NOW:
+# -Verify methods work: calculateTMA, calculateSlopeMA, calculateEMA (double/triple), identifyLongCandles, identifyDoji, identifyMarubozu
 #
 #-Urgent:
+# -Add an 'updateCurrentDayInfo' method that grabs the most up to date info for 'today'
+# -Convert mass calculate methods to individual day ones that go inside the while(date..) loop
+# -Make pd.Timedelta('1 day') a variable of the Stock class so we don't have to continually make it
+# -Check in our SMA/EMA calculations if try/except is faster than if/else
 # -Research types of stock analysis (http://www.investopedia.com)
 #
 #-Less Urgent:
-# -Build an sqlite db to store this information so we don't have to go get it repeatedly
 # -Build a treemap for visualization of data (see https://i.redd.it/b0viuwrmo85x.png)
 #  -Smallest: single stock, represented by ticker.
 #  -Size of square is represented by the Market Cap of that stock
@@ -40,7 +44,7 @@ except ImportError:
 
 try:
     from urllib.request import Request, urlopen
-except ImportError:  # python 2
+except ImportError:
 	print("Please install urllib : 'pip install urllib'");
 	importError = True;
 
@@ -248,20 +252,28 @@ def main():
 
 	#
 	currentStockData = retrieveCurrentStockData2(market, stocks);
-	#print(str(currentStockData));
-	#print();
-
 	historicalStockData = retrieveHistoricalStockData(market, stocks);
-	#print(str(historicalStockData));
-	#print();
+
+	masToPlot = ['KAMA'];
+	periodsToPlot = Stock.periods;
+	periodsToPlot.append(period);
+
+	masToPlot2 = ['KAMA'];
+	periodsToPlot2 = [7, 10];
 
 	#Build an array of our Stock objects
-	stockObjects = [Stock(stock, startDate, endDate, limit) for stock in stocks];
+	stockObjects = [Stock(stock, startDate, endDate, limit, periodsToPlot2) for stock in stocks];
 	for stock in stockObjects:
-		stock.plotClosesLineGraph(startDate, endDate);
+		stock.plotClosesCandlestickOHLC(startDate, endDate, periodsToPlot2, masToPlot);
+
+
+
+
+
 
 if __name__ == "__main__":
 	try:
+		sys.exit();
 		main();
 	except KeyboardInterrupt:
 		exit();
