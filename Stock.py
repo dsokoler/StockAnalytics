@@ -1,4 +1,5 @@
 import sys, configparser, json
+from datetime import datetime
 
 
 importError = False;
@@ -6,7 +7,7 @@ importError = False;
 try:
 	import requests
 except ImportError:
-	print("Please install requests: 'pip install requests'");
+	print("Please install requests: 'pip3 install requests'");
 	importError = True;
 
 #MatPlotLib for visualizations
@@ -16,21 +17,21 @@ try:
 	from matplotlib.finance import candlestick_ohlc
 	import matplotlib.dates as mdates
 except ImportError:
-	print("Please install matplotlib: 'pip install matplotlib'");
+	print("Please install matplotlib: 'pip3 install matplotlib'");
 	importError = True;
 
 #Pandas is for datetimes
 try:
 	import pandas as pd
 except ImportError:
-	print("Please install Pandas");
+	print("Please install Pandas: 'pip3 install pandas'");
 	importError = True;
 
 #Numpy for line of best fit
 try:
 	import numpy as np
 except ImportError:
-	print("Please install Numpy");
+	print("Please install Numpy: 'pip3 install numpy'");
 	importError = True;
 
 try:
@@ -53,6 +54,9 @@ class Stock:
 	 -Retrieve stock information (retrieve methods)
 	 -Perform calculations (calculate methods)
 	 -PROFIT (hopefully)
+
+	For Calculate Methods: KeyError means there is NO data for that day, something being
+	none indicates that there was PARTIAL data for that day
 	"""
 
 	#Retrieve information needed to access Intrinio API
@@ -65,7 +69,22 @@ class Stock:
 
 	kamaPeriod = 7;
 
-	def __init__(self, ticker, startDate, endDate, limit, period, outlier=1):
+	#Methods must be in the form 'calculateCALC'.  When we add a new calculation
+	# method, add it's abbreviation and whether or not it utilizes a period here
+	methods = {
+	#   Name : Uses Period
+		'SMA': True,
+		'TMA': True,
+		'SlopeMA': True,
+		'EMA': True,
+		'KAMA': True,
+		'Stochastics': False,
+		'AD': False,
+		'Aroon': True,
+		'OBV': False
+	}
+
+	def __init__(self, ticker, startDate, endDate, limit, period, database, outlier=1):
 		"""
 		Ticker: the abbreviation of this stock
 		startDate: the date on which to start all our analysis
@@ -98,248 +117,80 @@ class Stock:
 		
 		self.limit = limit;					#The PE*PBV limit (less means a better stock, but is harder to find)
 		self.outlier = outlier;				#Number of standard deviations to be considered an outlier
-		self.retrieveRatios();
+		
+		self.database = Database(database);
+		self.database.updateStockInformation(ticker);
+			
 		#self.makeDecisionInTimeframe(startDate, endDate, outlier);
 
-		#		
-		self.earliestDate = None;	#Earliest date seen in our dataset
-		self.latestDate = None;		#Latest date seen in our dataset
+		self.earliestDate, self.latestDate, data = self.database.retrieveAllInformationForStock(ticker);
 
+		#FIND A WAY TO AUTOMATE THIS BASED ON DATABASE COLUMNS
 		#Dictionary is for easy analysis at certain time periods, list is for easy plotting over time periods
-		self.opens = {};		#Holds date to open price
-		self.openList = [];		#(Date, open)
-		self.retrieveOpens();
+		self.opens = data['Dict']['Opens'];			#Holds date to open price
+		self.openList = data['List']['Opens'];		#(Date, open)
 		
-		self.closes = {};		#Holds date to close price
-		self.closeList = [];	#(Date, close)
-		self.retrieveCloses();
+		self.closes = data['Dict']['Closes'];		#Holds date to close price
+		self.closeList = data['List']['Closes'];	#(Date, close)
 		
-		self.highs = {};		#Holds date to high price
-		self.highList = [];		#(Date, high)
-		self.retrieveHighs();
+		self.highs = data['Dict']['Highs'];			#Holds date to high price
+		self.highList = data['List']['Highs'];		#(Date, high)
 		
-		self.lows = {};			#Holds date to low price
-		self.lowList = [];		#(Date, low)
-		self.retrieveLows();
+		self.lows = data['Dict']['Lows'];			#Holds date to low price
+		self.lowList = data['List']['Lows'];		#(Date, low)
 
-		self.volumes = {};		#Holds volumes for the stock
-		self.volumeList = [];	#(Date, volume)
-		self.retrieveVolumes();
+		self.volumes = data['Dict']['Volumes'];		#Holds volumes for the stock
+		self.volumeList = data['List']['Volumes'];	#(Date, volume)
+
+		self.pe = data['Dict']['PE'];				#Holds Price/Earnings ratios for the stock
+		self.peList = data['List']['PE'];			#(Date, P/E)
+
+		self.pbv = data['Dict']['PBV'];				#Holds Price/Book Value ratios for the stock
+		self.pbvList = data['List']['PBV']			#(Date, P/BV)
+
 
 		#SMA, EMA, KAMA, SlopeMA
-		self.mas = {}; 		#maName: {maPeriod: {date: value}}}}
-		self.masList = {}; 	#maName: {maPeriod: [date, value]}
-		for p in Stock.periods:
-			self.calculateSMA(p);	#ALWAYS CALCULATE SMA BEFORE ANY OTHER MA
-			self.calculateEMA(p);
-			self.calculateKAMA(p);
+		self.calcs = {}; 		#maName: {maPeriod: {date: value}}
+		self.calcsList = {}; 	#maName: {maPeriod: [date, value]}
 
-		self.stochastics = {};		#Holds stochastic information about the stock
-		self.stochasticList = [];	#(Date, K, D)
-		self.calculateStochastics();
+		#Force 'SMA' to be first calculation, as we need it for others
+		methodKeyList = list(Stock.methods.keys());
+		methodKeyList.insert(0, methodKeyList.pop(methodKeyList.index('SMA')))
 
-		self.ad = {};			#Holds Accumulation/Distribution information
-		self.adList = [];		#(Date, AD)
-		self.calculateAD();
+		#Do all our calculations
+		for method in methodKeyList:
+			funcToCall = getattr(Stock, 'calculate' + method);
 
-		self.aroon = {};		#Holds Aroon Indicator Data
-		self.aroonList = {};	#Period: {[Date, Aroon Up, Aroon Down]};
-		for p in Stock.periods:
-			self.calculateAroon(p);
+			#If 'funcToCall' uses a period
+			periodsToUse = Stock.periods;
+			if (Stock.methods[method]):
+				#Avoid KeyError
+				if (method not in self.calcs.keys()):
+					self.calcs[method] = {};
+				if (method not in self.calcsList.keys()):
+					self.calcsList[method] = {};
+				
+				for p in periodsToUse:
+					#If we've already calculated this for the stock
+					if (self.database.isCalculated(self.ticker, method, p)):
+						self.calcs[method][p], self.calcsList[method][p] = self.database.retrieveCalculation(self.ticker, method, p, self.startDate, self.endDate);
+					#If we haven't already calculated this
+					else:
+						funcToCall(self, period=p);
+
+			#'funcToCall' doesn't use a period
+			else:
+				#If we've already calculated this for the stock
+				if (self.database.isCalculated(self.ticker, method, None)):
+					self.calcs[method], self.calcsList[method] = self.database.retrieveCalculation(self.ticker, method, None, self.startDate, self.endDate);
+				#If we haven't already calculated this
+				else:
+					funcToCall(self);
 
 		self.objects = {}		#Holds items such as Doji, Marubozu, Spinning Tops, etc
 		#self.identifyObjects();	#Marubozu, Doji, Spinning Tops, etc
 
-
-
-#--------------------------Data Retrieval/Storage Methods---------------------------------------
-
-	def retrieveOpens(self):
-		"""
-		Retrieve all opening prices for our stock
-		"""
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_open_price".format(self.ticker);
-		r = requests.get(url, auth=(Stock.username, Stock.password));
-		d = r.json();
-
-		for item in d["data"]:
-			if (item["value"] == "nm"):
-				continue;
-
-			date = item["date"];
-			datetime = pd.to_datetime(date);
-
-			value = item["value"];
-			self.opens[date] = value;
-
-			if (self.earliestDate is None or datetime < self.earliestDate):
-				self.earliestDate = datetime;
-			if (self.latestDate is None or datetime > self.latestDate):
-				self.latestDate = datetime;
-
-			self.openList.append( [datetime, value] );
-
-
-	def retrieveCloses(self):
-		"""
-		Retrieve all closing prices for our stock
-		"""
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_close_price".format(self.ticker);
-		r = requests.get(url, auth=(Stock.username, Stock.password));
-		d = r.json();
-
-		for item in d["data"]:
-			if (item["value"] == "nm"):
-				continue;
-
-			date = item["date"];
-			datetime = pd.to_datetime(date);
-
-			value = item["value"];
-			self.closes[date] = value;
-
-			if (self.earliestDate is None or datetime < self.earliestDate):
-				self.earliestDate = datetime;
-			if (self.latestDate is None or datetime > self.latestDate):
-				self.latestDate = datetime;
-
-			self.closeList.append( [datetime, value] );
-
-
-
-	def retrieveHighs(self):
-		"""
-		Retrieve all high prices for our stock
-		"""
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_high_price".format(self.ticker);
-		r = requests.get(url, auth=(Stock.username, Stock.password));
-		d = r.json();
-
-		for item in d["data"]:
-			if (item["value"] == "nm"):
-				continue;
-
-			date = item["date"];
-			datetime = pd.to_datetime(date);
-
-			value = item["value"];
-			self.highs[date] = value;
-
-			if (self.earliestDate is None or datetime < self.earliestDate):
-				self.earliestDate = datetime;
-			if (self.latestDate is None or datetime > self.latestDate):
-				self.latestDate = datetime;
-
-			self.highList.append( [datetime, value] );
-
-
-
-	def retrieveLows(self):
-		"""
-		Retrieve all lows for our stock
-		"""
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_low_price".format(self.ticker);
-		r = requests.get(url, auth=(Stock.username, Stock.password));
-		d = r.json();
-
-		for item in d["data"]:
-			if (item["value"] == "nm"):
-				continue;
-
-			date = item["date"];
-			datetime = pd.to_datetime(date);
-
-			value = item["value"];
-			self.lows[date] = value;
-
-			if (self.earliestDate is None or datetime < self.earliestDate):
-				self.earliestDate = datetime;
-			if (self.latestDate is None or datetime > self.latestDate):
-				self.latestDate = datetime;
-
-			self.lowList.append( [datetime, value] );
-
-
-
-	def retrieveVolumes(self):
-		"""
-		Retrieve all each volume amount (per day) for our stock
-		"""
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item=adj_volume".format(self.ticker);
-		r = requests.get(url, auth=(Stock.username, Stock.password));
-		d = r.json();
-
-		for item in d["data"]:
-			if (item["value"] == "nm"):
-				continue;
-
-			date = item["date"];
-			datetime = pd.to_datetime(date);
-
-			year = int(date[0:4]);
-			month = int(date[5:7]);
-			day = int(date[8:10]);
-
-			if (year not in self.volumes.keys()):
-				self.volumes[year] = {};
-			if (month not in self.volumes[year].keys()):
-				self.volumes[year][month] = {};
-
-			value = item["value"];
-			self.volumes[year][month][day] = value;
-
-			if (self.earliestDate is None or datetime < self.earliestDate):
-				self.earliestDate = datetime;
-			if (self.latestDate is None or datetime > self.latestDate):
-				self.latestDate = datetime;
-
-			self.volumeList.append( [datetime, value] );
-
-
-
-
-	def retrieveRatios(self):
-		"""
-		Retrieve the P/E and P/BV ratios for our stock
-		"""
-
-		#Set up our data holder
-		historicData = {};
-		historicData["PE"] = {};
-		historicData["PBV"] = {};
-
-		url = "https://api.intrinio.com/historical_data?identifier={0}&item={1}";
-
-		keys = [
-			("PE", "pricetoearnings"),
-			("PBV", "pricetobook")
-		];
-
-		#Get information from API
-		for keyset in keys:
-			apiUrl = url.format(self.ticker, keyset[1]);
-			r = requests.get(apiUrl, auth=(Stock.username, Stock.password));
-			d = r.json();
-
-			if (d["data"] == None):
-				print("No data for " + self.ticker);
-				break;
-
-			for item in d["data"]:
-				if (item["value"] == "nm"):
-					continue;
-
-				date = item["date"];
-				datetime = pd.to_datetime(date);
-
-				historicData[keyset[0]][date] = item["value"];
-
-		self.information = historicData;
+		#self.database.printDB(self.ticker);
 
 
 
@@ -347,69 +198,86 @@ class Stock:
 #Should probably break these up by type (trend/momentum prediction, overlap studies, etc)
 #KAMA > EMA > (SlopeMA == TMA == SMA)
 	
-	def calculateSMA(self, period):
+	def calculateSMA(self, period=12):
 		"""
 		Calculates the SMA for this stock with the given time period
 
 		SMA = sum(LastXAverages) / X
 		"""
-		addDate = pd.Timedelta(str(period) + ' days');
 		date = self.earliestDate;
 
-		if ('SMA' not in self.mas.keys()):
-			self.mas['SMA'] = {};
-		elif (period in self.mas['SMA'].keys()):
+		if ('SMA' not in self.calcs.keys()):
+			self.calcs['SMA'] = {};
+		elif (period in self.calcs['SMA'].keys()):
 			print("Already calculated SMA for period " + str(period));
 			return;
-		if (period not in self.mas['SMA'].keys()):
-			self.mas['SMA'][period] = {};
+		if (period not in self.calcs['SMA'].keys()):
+			self.calcs['SMA'][period] = {};
 
-		if ('SMA' not in self.masList.keys()):
-			self.masList['SMA'] = {};
-		if (period not in self.masList['SMA'].keys()):
-			self.masList['SMA'][period] = [];
+		if ('SMA' not in self.calcsList.keys()):
+			self.calcsList['SMA'] = {};
+		if (period not in self.calcsList['SMA'].keys()):
+			self.calcsList['SMA'][period] = [];
 
 		lastPeriodCloses = [];
-		while(date != self.latestDate):
+		while(len(lastPeriodCloses) < period):
+			dateStr = str(date).split(' ')[0];
+			#Will err if we try to access a day the market was closed
+			try:
+				lastPeriodCloses.append( self.closes[dateStr] );
+			except KeyError:
+				pass;
+
+			date += pd.Timedelta('1 day');
+
+		while(date <= self.latestDate):
 			dateStr = str(date).split(' ')[0]
 
 			sma = sum(lastPeriodCloses)/period;		#mean(lastPeriodCloses)
 
 			#Happens when we hit a weekend
+			todayClose = None;
 			try:
-				lastPeriodCloses.append(self.closes[dateStr]);
+				todayClose = self.closes[dateStr];
 			except KeyError:
 				date += pd.Timedelta('1 day');
 				continue;
 
+			#todayClose would be None if the API did not have close data for this date
+			if (todayClose is not None):
+				lastPeriodCloses.append(todayClose);
+
 			if (len(lastPeriodCloses) > period):
 				lastPeriodCloses.pop(0);
 			
-			self.mas['SMA'][period][dateStr] = sma;
-			self.masList['SMA'][period].append( [date, sma] );
+			self.calcs['SMA'][period][dateStr] = sma;
+			self.calcsList['SMA'][period].append( [date, sma] );
 
 			date += pd.Timedelta('1 day');
 
+		self.database.addCalculation(self.ticker, 'SMA', period, self.calcsList['SMA'][period]);
 
 
-	def calculateTMA(self, period):
+
+	def calculateTMA(self, period=12):
 		"""
 		Calculates the triangular moving average for a stock over a period of time
 		"""
 		
-		if ('TMA' not in self.mas.keys()):
-			self.mas['TMA'] = {};
-		elif (period in self.mas['TMA'].keys()):
+		if ('TMA' not in self.calcs.keys()):
+			self.calcs['TMA'] = {};
+		elif (period in self.calcs['TMA'].keys()):
 			print("Already calculated TMA for period " + str(period));
 			return;
-		if (period not in self.mas['TMA'].keys()):
-			self.mas['TMA'][period] = {};
+		if (period not in self.calcs['TMA'].keys()):
+			self.calcs['TMA'][period] = {};
 
-		if ('TMA' not in self.masList.keys()):
-			self.masList['TMA'] = {};
-		if (period not in self.masList['TMA'].keys()):
-			self.masList['TMA'][period] = [];
+		if ('TMA' not in self.calcsList.keys()):
+			self.calcsList['TMA'] = {};
+		if (period not in self.calcsList['TMA'].keys()):
+			self.calcsList['TMA'][period] = [];
 
+		periodToTD = pd.Timedelta(str(period) + ' days');
 		date = self.earliestDate + periodToTD;
 		dateStr = str(date).split(' ')[0];
 
@@ -417,27 +285,29 @@ class Stock:
 		lastPeriodSMAs = [];
 		while(len(lastPeriodSMAs) < (period - 1)):
 			try:
-				lastPeriodSMAs.append(self.mas['SMA'][period][dateStr]);
-			except KeyError:
+				lastPeriodSMAs.append(self.calcs['SMA'][period][dateStr]);
+			except KeyError as k:
 				pass;
 
 			date += pd.Timedelta('1 day');
 			dateStr = str(date).split(' ')[0];
 
-		while(date < self.latestDate):
+		while(date <= self.latestDate):
 			try:
-				lastPeriodSMAs.append(self.mas['SMA'][period][dateStr]);
+				lastPeriodSMAs.append(self.calcs['SMA'][period][dateStr]);
 			except KeyError:
 				date += pd.Timedelta('1 day');
 				dateStr = str(date).split(' ')[0];
 
 			tma = sum(lastPeriodSMAs) / period;
 
-			self.mas['TMA'][period][dateStr] = tma;
-			self.masList['TMA'][period].append( [date, tma] );
+			self.calcs['TMA'][period][dateStr] = tma;
+			self.calcsList['TMA'][period].append( [date, tma] );
 
 			date += pd.Timedelta('1 day');
 			dateStr = str(date).split(' ')[0];
+
+		self.database.addCalculation(self.ticker, 'TMA', period, self.calcsList['TMA'][period]);
 
 
 
@@ -448,18 +318,18 @@ class Stock:
 		slope = (y2 - y1)/(x2 - x1)
 		"""
 
-		if ('SlopeMA' not in self.mas.keys()):
-			self.mas['SlopeMA'] = {};
-		elif (period in self.mas['SlopeMA'].keys()):
+		if ('SlopeMA' not in self.calcs.keys()):
+			self.calcs['SlopeMA'] = {};
+		elif (period in self.calcs['SlopeMA'].keys()):
 			print("Already calculated SlopeMA for period " + str(period));
 			return;
-		if (period not in self.mas['SlopeMA'].keys()):
-			self.mas['SlopeMA'][period] = {};
+		if (period not in self.calcs['SlopeMA'].keys()):
+			self.calcs['SlopeMA'][period] = {};
 
-		if ('SlopeMA' not in self.masList.keys()):
-			self.masList['SlopeMA'] = {};
-		if (period not in self.masList['SlopeMA'].keys()):
-			self.masList['SlopeMA'][period] = [];
+		if ('SlopeMA' not in self.calcsList.keys()):
+			self.calcsList['SlopeMA'] = {};
+		if (period not in self.calcsList['SlopeMA'].keys()):
+			self.calcsList['SlopeMA'][period] = [];
 
 		date = self.earliestDate;
 		dateStr = None;
@@ -467,6 +337,7 @@ class Stock:
 		lastPeriodDates = [];
 
 		while(len(lastPeriodCloses) < (period - 1) ):
+			dateStr = str(date).split(' ')[0];
 			#Will err if we try to access a day the market was closed
 			try:
 				lastPeriodCloses.append( self.closes[dateStr] );
@@ -475,8 +346,9 @@ class Stock:
 
 			date += pd.Timedelta('1 day');
 
-		while(date < self.latestDate):
-			dateStr = str(date);
+		slopeOverPeriod = 0;
+		while(date <= self.latestDate):
+			dateStr = str(date).split(' ')[0];
 
 			#Occurs when we try to access a day that the market was closed
 			todayClose = None;
@@ -486,22 +358,27 @@ class Stock:
 				date += pd.Timedelta('1 day');
 				continue;
 
-			lastPeriodCloses.append(todayClose);
-			lastPeriodDates.append(dateStr);
+			#Occurs if the API does not have close information for this date
+			if (todayClose is not None):
+				lastPeriodCloses.append(todayClose);
+				lastPeriodDates.append(dateStr);
 
-			slopeOverPeriod = (lastPeriodCloses[-1] - lastPeriodCloses[0]) / np.busday_count(lastPeriodDates[-1], lastPeriodDates[0]);
+				slopeOverPeriod = (lastPeriodCloses[-1] - lastPeriodCloses[0]) / np.busday_count(lastPeriodDates[-1], lastPeriodDates[0]);
 
-			self.mas['SlopeMA'][period][dateStr] = slopeOverPeriod;
-			self.masList['SlopeMA'][period].append( [dateStr, slopeOverPeriod] );
+			self.calcs['SlopeMA'][period][dateStr] = slopeOverPeriod;
+			self.calcsList['SlopeMA'][period].append( [dateStr, slopeOverPeriod] );
 
-			lastPeriodCloses.pop(0);
-			lastPeriodDates.pop(0);
+			if (len(lastPeriodCloses) > period):
+				lastPeriodCloses.pop(0);
+				lastPeriodDates.pop(0);
 
 			date += pd.Timedelta('1 day');
 
+		self.database.addCalculation(self.ticker, 'SlopeMA', period, self.calcsList['SlopeMA'][period]);
 
 
-	def calculateEMA(self, period, emaType='Single', percentage=None):
+
+	def calculateEMA(self, period=12, emaType='Single', percentage=None):
 		"""
 		Calculates the EMA for this stock based on the specified time period (in days)
 		For regular EMA, emaType='Single'	(Default)
@@ -530,70 +407,82 @@ class Stock:
 
 		periodToTD = pd.Timedelta(str(period) + ' days');
 
-		if ('EMA' not in self.mas.keys()):
-			self.mas['EMA'] = {};
-		elif (period in self.mas['EMA'].keys()):
+		if ('EMA' not in self.calcs.keys()):
+			self.calcs['EMA'] = {};
+		elif (period in self.calcs['EMA'].keys()):
 			print("Already calculated EMA for period " + str(period));
 			return;
-		if (period not in self.mas['EMA'].keys()):
-			self.mas['EMA'][period] = {};
+		if (period not in self.calcs['EMA'].keys()):
+			self.calcs['EMA'][period] = {};
 
-		if ('EMA' not in self.masList.keys()):
-			self.masList['EMA'] = {};
-		if (period not in self.masList['EMA'].keys()):
-			self.masList['EMA'][period] = [];
+		if ('EMA' not in self.calcsList.keys()):
+			self.calcsList['EMA'] = {};
+		if (period not in self.calcsList['EMA'].keys()):
+			self.calcsList['EMA'][period] = [];
 
 		date = self.earliestDate + periodToTD;
 		dateStr = str(date - pd.Timedelta('1 day')).split(' ')[0];
 		
 		#UGLY AF!!!  Used to prevent keyerrors when the starting day is a Monday
 		prevEma = None;
-		if (dateStr not in self.mas['EMA'][period].keys()):
+		if (dateStr not in self.calcs['EMA'][period].keys()):
 			counter = 0;
 			while (prevEma is None):
 				d = date + pd.Timedelta(str(counter) + ' days');
 				dStr = str(d).split(' ')[0];
-				if (dStr not in self.mas['SMA'][period].keys()):
+
+				if (dStr not in self.calcs['SMA'][period].keys()):
 					counter += 1;
 					continue;
 				else:
-					prevEma = self.mas['SMA'][period][dStr]
+					prevEma = self.calcs['SMA'][period][dStr]
 		else:
-			prevEma = self.mas['EMA'][period][dateStr];
+			prevEma = self.calcs['EMA'][period][dateStr];
 
 		#This makes it easier to do double/triple EMA
 		def ema(prevEma, multiplier, close):
 			return (prevEma + multiplier*(close - prevEma));
 
-		while(date != self.latestDate):
+		while(date <= self.latestDate):
 			dateStr = str(date).split(' ')[0]
 
-			ema = None;
+			todayClose = None;
 			#Happens when the market wasn't open, (holiday, weekend, etc)
 			try:
 				#ema and ema2 MUST be equal!!
-				ema = ema(prevEma, multiplier, self.closes[dateStr]);
-				ema2 = prevEma + multiplier * (self.closes[dateStr] - prevEma);
-				
-				#( 2*EMA(n) ) – ( EMA(EMA(n)) ) where ‘n’ is #ofDays
-				if (emaType == 'Double'):
-					ema = 2 * ema(prevEma, multiplier, ema) - ema( prevEma, multiplier, ema(prevEma, multiplier, ema) );
-				
-				#3*EMA(n) – 3*EMA(EMA(n)) + EMA(EMA(EMA(n)))
-				elif (emaType == 'Triple'):
-					ema = 3 * ema(prevEma, multiplier, ema) - 3 * ema( prevEma, multiplier, ema(prevEma, multiplier, ema) ) + ema(prevEma, multiplier, ema(prevEma, multiplier, ema(prevEma, multiplier, ema)));
+				todayClose = self.closes[dateStr];
 			except KeyError:
 				date += pd.Timedelta('1 day');
 				continue;
 
-			prevEma = ema;
+			expMovAvg = None;
+			emaName = None;
 
-			emaName = (emaTypeToNumber + 'EMA');
+			#Occurs if the API didn't have close information for this date
+			if (todayClose is None):
+				expMovAvg = prevEma;
+			else:
+				expMovAvg = ema(prevEma, multiplier, todayClose);
+				expMovAvg2 = prevEma + multiplier * (todayClose - prevEma);
+				
+				#( 2*EMA(n) ) – ( EMA(EMA(n)) ) where ‘n’ is #ofDays
+				if (emaType == 'Double'):
+					expMovAvg = 2 * ema(prevEma, multiplier, expMovAvg) - ema( prevEma, multiplier, ema(prevEma, multiplier, expMovAvg) );
+				
+				#3*EMA(n) – 3*EMA(EMA(n)) + EMA(EMA(EMA(n)))
+				elif (emaType == 'Triple'):
+					expMovAvg = 3 * ema(prevEma, multiplier, expMovAvg) - 3 * ema( prevEma, multiplier, ema(prevEma, multiplier, expMovAvg) ) + ema(prevEma, multiplier, ema(prevEma, multiplier, ema(prevEma, multiplier, expMovAvg)));
 
-			self.mas[emaName][period][dateStr] = ema;
-			self.masList[emaName][period].append( [date, ema] );
+				prevEma = expMovAvg;
+
+				emaName = (emaTypeToNumber[emaType] + 'EMA');
+
+			self.calcs[emaName][period][dateStr] = expMovAvg;
+			self.calcsList[emaName][period].append( [date, expMovAvg] );
 
 			date += pd.Timedelta('1 day');
+
+		self.database.addCalculation(self.ticker, 'EMA', period, self.calcsList['EMA'][period]);
 
 
 
@@ -615,18 +504,18 @@ class Stock:
 		date = self.earliestDate;
 		dateStr = None;
 
-		if ('KAMA' not in self.mas.keys()):
-			self.mas['KAMA'] = {};
-		elif (period in self.mas['KAMA'].keys()):
+		if ('KAMA' not in self.calcs.keys()):
+			self.calcs['KAMA'] = {};
+		elif (period in self.calcs['KAMA'].keys()):
 			print("Already calculated KAMA for period " + str(period));
 			return;
-		if (period not in self.mas['KAMA'].keys()):
-			self.mas['KAMA'][period] = {};
+		if (period not in self.calcs['KAMA'].keys()):
+			self.calcs['KAMA'][period] = {};
 
-		if ('KAMA' not in self.masList.keys()):
-			self.masList['KAMA'] = {};
-		if (period not in self.masList['KAMA'].keys()):
-			self.masList['KAMA'][period] = [];
+		if ('KAMA' not in self.calcsList.keys()):
+			self.calcsList['KAMA'] = {};
+		if (period not in self.calcsList['KAMA'].keys()):
+			self.calcsList['KAMA'][period] = [];
 
 		lastPeriodCloses = [];
 		lastPeriodPriceChanges = []	#index corresponds directly to the same index in lastPeriodCloses
@@ -637,10 +526,17 @@ class Stock:
 			
 			#Will err if we try to access a day the market was closed
 			try:
-				lastPeriodCloses.append( self.closes[dateStr] );
+				todayClose = self.closes[dateStr]
 			except KeyError:
 				date += pd.Timedelta('1 day');
 				continue;
+			
+			#Occurs when the API does not have close information for this date
+			if (todayClose is None):
+				date += pd.Timedelta('1 day');
+				continue;
+
+			lastPeriodCloses.append( self.closes[dateStr] );
 
 			#Calculate the most recent change
 			if (len(lastPeriodCloses) > 1):
@@ -654,7 +550,7 @@ class Stock:
 		prevKama = sum(lastPeriodCloses)/len(lastPeriodCloses);
 
 		#Start doing our calculations
-		while (date != self.latestDate):
+		while (date <= self.latestDate):
 			dateStr = str(date).split(' ')[0];
 
 			#Occurs when we try to access a day that the market was closed
@@ -665,37 +561,41 @@ class Stock:
 				date += pd.Timedelta('1 day');
 				continue;
 
-			#Change = abs(Close – close10PeriodsAgo)
-			change = abs(todayClose - lastPeriodCloses[0]);
-			
-			#Volatility is the sum of the absolute value of the last ten price changes
-			volatility = sum(lastPeriodPriceChanges);
-			
-			#Efficiency Ratio = Change / Volatility
-			er = change/volatility;
+			kama = prevKama;
 
-			#Calculate our fastest Smoothing Constant
-			fastestSC = None;
-			if (fastest is None):
-				fastestSC = 2/(2 + 1);
-			else:
-				fastestSC = 2/(fastest + 1);
+			#Make sure we don't do calculations on 'None' data
+			if (todayClose is not None):
+				#Change = abs(Close – close10PeriodsAgo)
+				change = abs(todayClose - lastPeriodCloses[0]);
+				
+				#Volatility is the sum of the absolute value of the last ten price changes
+				volatility = sum(lastPeriodPriceChanges);
+				
+				#Efficiency Ratio = Change / Volatility
+				er = change/volatility;
 
-			#Calculate our slowest Smoothing Constant
-			slowestSC = None;
-			if (slowest is None):
-				slowestSC = 2/(10 + 1);
-			else:
-				slowestSC = 2/(slowest + 1);
+				#Calculate our fastest Smoothing Constant
+				fastestSC = None;
+				if (fastest is None):
+					fastestSC = 2/(2 + 1);
+				else:
+					fastestSC = 2/(fastest + 1);
 
-			#Our real Smoothing Constant = [ER * (FastestSC – SlowestSC) + SlowestSC]^2 = [ER * (2/3 – 2/31) + 2/31]^2
-			sc = (er * (fastestSC - slowestSC) + slowestSC) ** 2;	# '**' is exponentiation
-			
-			#KAMA = prevKAMA + SmoothingConstant * (Close - prevKAMA)
-			kama = prevKama + sc * (self.closes[dateStr] - prevKama);
+				#Calculate our slowest Smoothing Constant
+				slowestSC = None;
+				if (slowest is None):
+					slowestSC = 2/(10 + 1);
+				else:
+					slowestSC = 2/(slowest + 1);
 
-			self.mas['KAMA'][period][dateStr] = kama;
-			self.masList['KAMA'][period].append( [date, kama] );
+				#Our real Smoothing Constant = [ER * (FastestSC – SlowestSC) + SlowestSC]^2 = [ER * (2/3 – 2/31) + 2/31]^2
+				sc = (er * (fastestSC - slowestSC) + slowestSC) ** 2;	# '**' is exponentiation
+				
+				#KAMA = prevKAMA + SmoothingConstant * (Close - prevKAMA)
+				kama = prevKama + sc * (todayClose - prevKama);
+
+			self.calcs['KAMA'][period][dateStr] = kama;
+			self.calcsList['KAMA'][period].append( [date, kama] );
 
 			#Fix our last KAMA and our last 'period' information (close and change)
 			prevKama = kama;
@@ -705,6 +605,8 @@ class Stock:
 			lastPeriodPriceChanges.pop(0)
 
 			date += pd.Timedelta('1 day');
+
+		self.database.addCalculation(self.ticker, 'KAMA', period, self.calcsList['KAMA'][period]);
 
 
 
@@ -721,6 +623,10 @@ class Stock:
 		Starting at the earliest date, calculate the above and store
 		Each date in stochastics is a dictionary holding 'K' and 'D'
 		"""
+
+		stochastics = {};
+		stochasticList = []
+
 		lastFiveCloses = [];
 		lastFiveHighs = [];
 		lastFiveLows = [];
@@ -730,51 +636,74 @@ class Stock:
 		lastThreeKs = [];
 
 		#Calculate stochastics for every date we have
-		while(date != currentDate):
+		prevK = 0;
+		prevD = 0;
+		while(date <= currentDate):
 			dateStr = str(date).split(' ')[0]
 			
+			closeValue = None;
+			highValue = None;
+			lowValue = None;
 			try:
 				#Retrieve closing value for this date
 				closeValue = self.closes[dateStr];
-				lastFiveCloses.append(closeValue);
-				if (len(lastFiveCloses) > 5):
-					lastFiveCloses.pop(0);
 
 				#Retrieve highest value for this date
 				highValue = self.highs[dateStr];
-				lastFiveHighs.append(highValue);
-				if (len(lastFiveHighs) > 5):
-					lastFiveHighs.pop(0);
 
 				#Retrieve lowest value for this date
 				lowValue = self.lows[dateStr];
-				lastFiveLows.append(lowValue);
-				if (len(lastFiveLows) > 5):
-					lastFiveLows.pop(0);
 			except KeyError:	#odds are this is caused by this date being a non-trading day, or not having today's close
 				date += pd.Timedelta("1 day");
 				continue;
 
-			#Calculate 'k' point and 'd' point
-			try:
-				k = 100 * ( (lastFiveCloses[-1] - min(lastFiveLows)) / (max(lastFiveHighs) - min(lastFiveLows)) )
-				d = ( sum(lastThreeKs) / 3);
-			except ZeroDivisionError as zde:
-				date += pd.Timedelta("1 day");
-				continue;
+			#Occurs when the API doesn't have particular values, just take the last ones...
+			if (closeValue is None or highValue is None or lowValue is None):
+				k = prevK;
+				d = prevD;
+
+			else:
+				lastFiveCloses.append(closeValue);
+				if (len(lastFiveCloses) > 5):
+					lastFiveCloses.pop(0);
+
+				lastFiveHighs.append(highValue);
+				if (len(lastFiveHighs) > 5):
+					lastFiveHighs.pop(0);
+
+				lastFiveLows.append(lowValue);
+				if (len(lastFiveLows) > 5):
+					lastFiveLows.pop(0);
+
+
+				#Calculate 'k' point and 'd' point
+				try:
+					k = 100 * ( (lastFiveCloses[-1] - min(lastFiveLows)) / (max(lastFiveHighs) - min(lastFiveLows)) )
+					d = ( sum(lastThreeKs) / 3);
+				except ZeroDivisionError as zde:
+					date += pd.Timedelta("1 day");
+					continue;
+
+			prevK = k;
+			prevD = d;
 
 			lastThreeKs.append(k);
 			if (len(lastThreeKs) > 3):
 				lastThreeKs.pop(0);
 
 			#Store values
-			self.stochastics[dateStr] = {};
-			self.stochastics[dateStr]['K'] = k;
-			self.stochastics[dateStr]['D'] = d;
+			stochastics[dateStr] = {};
+			stochastics[dateStr]['K'] = k;
+			stochastics[dateStr]['D'] = d;
 
-			self.stochasticList.append( [date, k, d] );
+			stochasticList.append( [date, k, d] );
 
 			date += pd.Timedelta("1 day");
+
+		self.database.addCalculation(self.ticker, 'Stochastics', None, stochasticList);
+
+		self.calcs['Stochastics'] = stochastics;
+		self.calcsList['Stochastics'] = stochasticList;
 
 
 
@@ -782,65 +711,69 @@ class Stock:
 		"""
 		Money Flow Multiplier = [(Close - Low) - (High - Close)] / (High - Low)  |  Should be -1 <= x <= 1
 		Money Flow Volume = MFM * (Volume for Period)
-		AD = (Previous AD) + MFV
+		Accumulation Distribution Point = (Previous AD) + MFV
 
 		Period is 'day', 'month', 'year'
 		"""
+		adDict = {};
+		adList = [];
+
 		ad = 0;
 
-		#Do the calculations for yearly so we can do yearly AD later
-		for year in sorted(list(self.volumes.keys())):
+		for date in sorted(self.volumes.keys()):
+			close = None;
+			high = None;
+			low = None;
 
-			#Do the calculations for monthly so we can do monthly AD later
-			for month in sorted(list(self.volumes[year].keys())):
+			try:
+				close = self.closes[date];
+				high = self.highs[date];
+				low = self.lows[date];
+			except KeyError:
+				continue;
 
-				#Do the calculations for daily so we can do daily AD later
-				for day in sorted(list(self.volumes[year][month].keys())):
-					date = "{0}-{1:0>2}-{2:0>2}".format(year, month, day);
+			#Occurs if the API does not have some data for this date
+			if (close is not None and high is not None and low is not None):
+				#Calculate daily MFM and MFV
+				#-MFM as zero affects nothing, and helps avoid ZeroDivisionError (when high == low)
+				mfm = 0;
+				if (high != low):
+					mfm = ((close - low) - (high - close)) / (high - low);
+				mfv = mfm * self.volumes[date];
+				ad += mfv;
 
-					close = self.closes[date];
-					high = self.highs[date];
-					low = self.lows[date];
+			#Fill in our data structures
+			adDict[date] = ad;
+			adList.append( [pd.to_datetime(date), ad] );
 
+		self.database.addCalculation(self.ticker, 'AD', None, adList);
 
-					#Calculate daily MFM and MFV
-					#-MFM as zero affects nothing, and helps avoid ZeroDivisionError (when high == low)
-					mfm = 0;
-					if (high != low):
-						mfm = ((close - low) - (high - close)) / (high - low);
-					mfv = mfm * self.volumes[year][month][day];
-					ad += mfv;
-
-					#Ensure we don't get KeyErrors
-					if (year not in self.ad.keys()):
-						self.ad[year] = {};
-					if (month not in self.ad[year].keys()):
-						self.ad[year][month] = {};
-
-					#Fill in our data structures
-					self.ad[year][month][day] = ad;
-					self.adList.append( [pd.to_datetime(date), ad] );
+		self.calcs['AD'] = adDict;
+		self.calcsList['AD'] = adList;
 
 
 
-	def calculateAroon(self, periodLength):
+	def calculateAroon(self, period=12):
 		"""
 		Measures if a security is in a trend, the magnitude of that trend, and whether that trend is likely to reverse (or not)
 		
 		Aroon Up:   ( (25 - Days Since 25 Day High) / 25 ) * 100
 		Aroon Down: ( (25 - Days Since 25 Day Low) / 25 ) * 100
 		"""
+		period
+		aroonDict = {};
+		aroonList = [];
+
 		last25Highs = [];
 		last25Lows = [];
 		date = self.earliestDate;
 		currentDate = self.latestDate;
 
 		#Calculate Aroon Indicators for every date we have
-		while(date != currentDate):
+		aroonUp = 0;
+		aroonDown = 0;
+		while(date <= currentDate):
 			dateStr = str(date).split(' ')[0]
-			year = int(dateStr[0:4]);
-			month = int(dateStr[5:7]);
-			day = int(dateStr[8:10]);
 
 			#Retrieve highest value for this date
 			highValue = None;
@@ -849,11 +782,7 @@ class Stock:
 			except KeyError:
 				date += pd.Timedelta('1 day');
 				continue;
-
-			last25Highs.append(highValue);
-			if (len(last25Highs) > periodLength):
-				last25Highs.pop(0);
-
+			
 			#Retrieve lowest value for this date
 			lowValue = None;
 			try:
@@ -862,38 +791,120 @@ class Stock:
 				date += pd.Timedelta('1 day');
 				continue;
 
-			last25Lows.append(lowValue);
-			if (len(last25Lows) > periodLength):
-				last25Lows.pop(0);
+			#Occurs if the API does not have some information for that day
+			if (highValue is not None and lowValue is not None):
+				last25Highs.append(highValue);
+				if (len(last25Highs) > period):
+					last25Highs.pop(0);
 
-			#Calculate Aroon Up
-			timeSinceHigh = periodLength - last25Highs.index(max(last25Highs));
-			aroonUp = ( (periodLength - timeSinceHigh) / periodLength ) * 100;
+				last25Lows.append(lowValue);
+				if (len(last25Lows) > period):
+					last25Lows.pop(0);
 
-			#Calculate Aroon Down
-			timeSinceLow = periodLength - last25Lows.index(min(last25Lows));
-			aroonDown = ( (periodLength - timeSinceLow) / periodLength ) * 100;
+				#Calculate Aroon Up
+				timeSinceHigh = period - last25Highs.index(max(last25Highs));
+				aroonUp = ( (period - timeSinceHigh) / period ) * 100;
+
+				#Calculate Aroon Down
+				timeSinceLow = period - last25Lows.index(min(last25Lows));
+				aroonDown = ( (period - timeSinceLow) / period ) * 100;
 
 			#Ensure we don't get KeyErrors
-			if (periodLength not in self.aroon.keys()):
-				self.aroon[periodLength] = {};
-			if (year not in self.aroon[periodLength].keys()):
-				self.aroon[periodLength][year] = {};
-			if (month not in self.aroon[periodLength][year].keys()):
-				self.aroon[periodLength][year][month] = {};
-			if (day not in self.aroon[periodLength][year][month].keys()):
-				self.aroon[periodLength][year][month][day] = {};
-
-			if (periodLength not in self.aroonList.keys()):
-				self.aroonList[periodLength] = [];
+			if (period not in aroonDict.keys()):
+				aroonDict[period] = {};
+			if (dateStr not in aroonDict[period].keys()):
+				aroonDict[period][dateStr] = {};
 
 			#Fill in our data structures
-			self.aroon[periodLength][year][month][day]["Up"] = aroonUp;
-			self.aroon[periodLength][year][month][day]["Down"] = aroonDown;
-			self.aroonList[periodLength].append( [date, aroonUp, aroonDown] );
+			aroonDict[period][dateStr]["Up"] = aroonUp;
+			aroonDict[period][dateStr]["Down"] = aroonDown;
+			aroonList.append( [date, aroonUp, aroonDown] );
 
 			#Increment our counter
 			date += pd.Timedelta('1 day');
+
+		self.database.addCalculation(self.ticker, 'Aroon', period, aroonList);
+
+		self.calcs['Aroon'] = aroonDict;
+
+		if ('Aroon' not in self.calcsList.keys()):
+			self.calcsList['Aroon'] = {};
+		self.calcsList['Aroon'][period] = aroonList;
+
+
+
+	def calculateOBV(self):
+		"""
+		Calculates the On-Balance Volume for a stock
+		
+		i.	 If todayClose > yesterdayClose, currentOBV = prevOBV + todayVolume
+		ii.	 If todayClose < yesterdayClose, currentOBV = prevOBV – todayVolume
+		iii. If todayClose == yesterdayClose, currentOBV = prevOBV
+
+		When plotting, don't have Y axis labels.  We really only care about the 
+		changes from point to point (slope), and what the line looks like.
+		-High positive slope may indicate a soon-to-be price rise
+		-High negative slope may inticate a soon-to-be price fall
+		"""
+		obv = 0;
+		date = self.earliestDate;
+		dateStr = str(date).split(' ')[0];
+
+		obvDict = {};
+		obvList = [];
+
+		#Get our first data point
+		yesterdayClose = None;
+		while(yesterdayClose is None):
+			volume = None;
+			try:
+				yesterdayClose = self.closes[dateStr];
+				volume = self.volumes[dateStr];
+				obv += volume;
+			except KeyError:
+				pass;
+			else:
+				#Need to add info to data structures before increasing date!
+				obvDict[dateStr] = obv;
+				obvList.append( [date, obv] );
+				
+
+			date += pd.Timedelta('1 day');
+			dateStr = str(date).split(' ')[0];
+		
+
+		#Calculate the rest of the data points
+		while(date <= self.latestDate):
+			todayClose = None;
+			todayVolume = None;
+
+			#KeyError occurs when we try to access a day the market was closed
+			try:
+				todayClose = self.closes[dateStr];
+				todayVolume = self.volumes[dateStr];
+			except KeyError:
+				date += pd.Timedelta('1 day');
+				dateStr = str(date).split(' ')[0];
+				continue;
+
+			if (todayClose > yesterdayClose):
+				obv = obv + todayVolume;
+			elif (todayClose < yesterdayClose):
+				obv = obv - todayVolume;
+
+			obvDict[dateStr] = obv;
+			obvList.append( [date, obv] );
+
+			date += pd.Timedelta('1 day');
+			dateStr = str(date).split(' ')[0];
+			yesterdayClose = todayClose;
+
+		self.calcs['OBV'] = obvDict;
+		self.calcsList['OBV'] = obvList;
+
+		self.database.addCalculation(self.ticker, 'OBV', None, obvList);
+
+
 
 
 
@@ -922,7 +933,7 @@ class Stock:
 		-e.g. for LWC open must be 1.5x close (or whatever it is)
 		"""
 		if ('Candles' in self.objects.keys()):
-			print("Already calculated Long Candles for " + self.ticker):
+			print("Already calculated Long Candles for " + self.ticker);
 			return;
 
 		#Ensure no KeyErrors
@@ -978,7 +989,7 @@ class Stock:
 
 		#Day + 1 b/c we are looking for LWC or LBC before some of these
 		if ('LWC' not in self.objects.keys()):
-			print("Please run 'identifyLongCandles' before 'identifyDoji'"):
+			print("Please run 'identifyLongCandles' before 'identifyDoji'");
 			sys.exit();
 
 		if ('Doji' in self.objects.keys()):
@@ -997,8 +1008,8 @@ class Stock:
 		dateStr = str(date).split(' ')[0];
 
 		while(date != self.latestDate):
-			hasLWC = (dateStr in self.);
-			hasLBC = ();
+			#hasLWC = (dateStr in self.);
+			#hasLBC = ();
 
 
 			date += pd.Timedelta('1 day');
@@ -1042,9 +1053,9 @@ class Stock:
 
 			#MARUBOZU IN TERMS OF PERCENTAGE?
 			#-E.G. for Black Marubozu how close to the high does the open have to be for it to qualify?
-			if (dayOpen == dayHigh and dayClose = dayLow):
+			if (dayOpen == dayHigh and dayClose == dayLow):
 				self.objects['Marubozu']['B'][dateStr] = True;
-			elif (dayClose == dayHigh and dayOpen = dayLow):
+			elif (dayClose == dayHigh and dayOpen == dayLow):
 				self.objects['Marubozu']['W'][dateStr] = True;
 
 			date += pd.Timedelta('1 day');
@@ -1157,7 +1168,7 @@ class Stock:
 
 
 
-	def plotClosesCandlestickOHLC(self, startDate, endDate, period, movingAverages):
+	def plotClosesCandlestickOHLC(self, startDate, endDate, maAndPeriod):
 		"""
 		Plots the closes for a stock as a Candlestick OHLC plot
 		takes date, open, high, low, close, volume
@@ -1183,14 +1194,12 @@ class Stock:
 				dayClose = self.closes[date];
 				dayHigh = self.highs[date];
 				dayLow = self.lows[date];
-
-				dateStr = str(date).split(' ')[0]
-				year = int(dateStr[0:4]);
-				month = int(dateStr[5:7]);
-				day = int(dateStr[8:10]);
-
-				dayVolume = self.volumes[year][month][day];
+				dayVolume = self.volumes[date];
 			except KeyError:	#We need all this info, so missing any one piece means we skip the day (unfortunately)
+				continue;
+
+			#Some of these seem to be randomly missing...
+			if (dayDate is None or dayOpen is None or dayClose is None or dayHigh is None or dayLow is None or dayVolume is None):
 				continue;
 
 			dohlcv.append([dayDate, dayOpen, dayHigh, dayLow, dayClose, dayVolume]);
@@ -1198,13 +1207,25 @@ class Stock:
 		fig, ax = plt.subplots();
 		candlestick_ohlc(ax, dohlcv, colorup='#77d879', colordown='#db3f3f');
 
-		for ma in movingAverages:
-			for p in period:
-				try:
-					newMasList = [entry for entry in self.masList[ma][p] if (entry[0] >= startDate and entry[0] <= endDate)];
-					ax.plot(*zip(*newMasList), label=(ma + str(p)));
-				except KeyError:
-					continue;
+		haveLabel = False;
+		for ma in maAndPeriod.keys():
+			p = maAndPeriod[ma];
+
+			#Haven't run the calcution for this moving average at this period
+			if (p not in self.calcsList[ma]):
+				funcToCall = getattr(Stock, 'calculate' + ma);
+
+				#HELLO ANONYMOUS FUNCTION CALL!
+				funcToCall(self, period=p);
+
+			#Prevent error if we try to plot a MA or period that doesn't exist
+			try:
+				newMasList = [entry for entry in self.calcsList[ma][p] if (entry[0] >= startDate and entry[0] <= endDate)];
+				ax.plot(*zip(*newMasList), label=(ma + str(p)));
+				haveLabel = True;
+			except KeyError:
+				print("BORKED!    " + str(ma) + " :: " + str(p));
+				continue;
 
 		ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'));
 		ax.xaxis.set_major_locator(mticker.MaxNLocator(10));
@@ -1213,7 +1234,9 @@ class Stock:
 		plt.xlabel('Date');
 		plt.ylabel('Close');
 		plt.title(self.ticker.upper() + " Closes from " + str(startDate).split(' ')[0] + " to " + str(endDate).split(' ')[0]);
-		plt.legend();
+		#Only add a legend if we have things that need a legend
+		if (haveLabel):
+			plt.legend();
 		fig.autofmt_xdate();
 		plt.show();
 
@@ -1234,14 +1257,14 @@ class Stock:
 			eDate = pd.to_datetime('today');
 		ratioList = []
 
-		for key in self.information["PE"]:
+		for key in self.pe:
 			keyDate = pd.to_datetime(key);
 			if (keyDate < sDate or keyDate > eDate):
 				continue;
 
 			try:
-				pe = self.information["PE"][key];
-				pbv = self.information["PBV"][key];
+				pe = self.pe[key];
+				pbv = self.pbv[key];
 			except KeyError:
 				continue;
 

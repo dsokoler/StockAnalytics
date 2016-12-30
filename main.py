@@ -1,15 +1,20 @@
 #TODO:
 #-DO RIGHT NOW:
+# -Check if we already have calculations in DB
+# -Convert mass calculate methods to individual day ones that go inside the while(date..) loop
 # -Verify methods work: calculateTMA, calculateSlopeMA, calculateEMA (double/triple), identifyLongCandles, identifyDoji, identifyMarubozu
 #
 #-Urgent:
+# -Make a 'Moving Average' class/object that we can include in Stock
+#  -Type ('SMA', 'TMA'), calculation (method that does the calculation), period, (and any other info)
 # -Add an 'updateCurrentDayInfo' method that grabs the most up to date info for 'today'
-# -Convert mass calculate methods to individual day ones that go inside the while(date..) loop
 # -Make pd.Timedelta('1 day') a variable of the Stock class so we don't have to continually make it
 # -Check in our SMA/EMA calculations if try/except is faster than if/else
+# -Add overbought/oversold indicators (when we get to the analysis phase)
 # -Research types of stock analysis (http://www.investopedia.com)
 #
 #-Less Urgent:
+# -Change calculate methods to return dicts/lists instead of doing the assignation inside those methods
 # -Build a treemap for visualization of data (see https://i.redd.it/b0viuwrmo85x.png)
 #  -Smallest: single stock, represented by ticker.
 #  -Size of square is represented by the Market Cap of that stock
@@ -171,7 +176,9 @@ def retrieveHistoricalStockData(market, stocks):
 
 
 optionsList = [""];
-longOptionsList = ["stocks=", "market=", "limit=", "startDate=", "endDate=", "outlier=", "removeOutliers", "period="];
+longOptionsList = ["stocks=", "market=", "limit=", "startDate=", 
+					"endDate=", "outlier=", "removeOutliers", 
+					"period=", "database="];
 def main():
 
 	"""
@@ -192,6 +199,8 @@ def main():
 	outlier = 1;
 	removeOutliers = False;
 	period = 26;		#Length of time for averages and indicators (in days)
+	database = "default";
+	listTables = False;
 
 	for opt, arg in opts:
 		if (opt == "--market"):
@@ -240,6 +249,10 @@ def main():
 			endDate = pd.to_datetime('today');
 			startDate = endDate - periodDatetime;
 
+		#If this is not specified we default to "default.db"
+		elif (opt == "--database"):
+			database = arg;
+
 	#empty lists identify as false
 	if (not stocks):
 		print("Please specify one or more stocks");
@@ -251,20 +264,20 @@ def main():
 		sys.exit();
 
 	#
-	currentStockData = retrieveCurrentStockData2(market, stocks);
-	historicalStockData = retrieveHistoricalStockData(market, stocks);
+	#currentStockData = retrieveCurrentStockData2(market, stocks);
+	#historicalStockData = retrieveHistoricalStockData(market, stocks);
 
-	masToPlot = ['KAMA'];
-	periodsToPlot = Stock.periods;
-	periodsToPlot.append(period);
+	periodsToPlot2 = None;
 
-	masToPlot2 = ['KAMA'];
-	periodsToPlot2 = [7, 10];
+	masToPlot = {
+		#'KAMA': 10,
+		#'EMA': 12
+	}
 
 	#Build an array of our Stock objects
-	stockObjects = [Stock(stock, startDate, endDate, limit, periodsToPlot2) for stock in stocks];
+	stockObjects = [Stock(stock, startDate, endDate, limit, periodsToPlot2, database) for stock in stocks];
 	for stock in stockObjects:
-		stock.plotClosesCandlestickOHLC(startDate, endDate, periodsToPlot2, masToPlot);
+		stock.plotClosesCandlestickOHLC(stock.startDate, stock.endDate, masToPlot);
 
 
 
@@ -273,7 +286,6 @@ def main():
 
 if __name__ == "__main__":
 	try:
-		sys.exit();
 		main();
 	except KeyboardInterrupt:
 		exit();
